@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+from glc.channels.envelope import ChannelMessage, ChannelReply
 from glc.security.allowlists import allowed
 from glc.security.pairing import get_pairing_store
 from glc.security.trust_level import classify
@@ -69,3 +72,73 @@ def test_trust_level_user_paired():
     code, _ = store.issue_code("slack", "U1", "user")
     store.confirm_code(code)
     assert classify("slack", "U1") == "user_paired"
+
+
+# ── the allowlist on a live adapter connection ──────────────────────────────
+# An adapter WebSocket outlives any number of pairing changes, so the owner set
+# the allowlist is checked against has to be read per message, not per
+# connection. `_verified_identity` already re-reads the trust level per message;
+# these assert the admission decision keeps up with it.
+
+
+class _RecordingBridge:
+    """Stands in for S16. Records whatever GLC decided to forward."""
+
+    def __init__(self) -> None:
+        self.messages: list[ChannelMessage] = []
+
+    async def handle(self, message: ChannelMessage) -> ChannelReply:
+        self.messages.append(message)
+        return ChannelReply(
+            channel=message.channel,
+            channel_user_id=message.channel_user_id,
+            text=f"S16 answered {message.text}",
+        )
+
+
+def _envelope(text: str) -> str:
+    return ChannelMessage(
+        channel="webui",
+        channel_user_id="42",
+        user_handle="owner",
+        text=text,
+        trust_level="owner_paired",
+        arrived_at=datetime.now(UTC),
+    ).model_dump_json()
+
+
+def test_revoking_an_owner_takes_effect_on_a_live_connection(app_client, install_token):
+    """Revocation is a control; it has to hold without an adapter restart."""
+    pairings = get_pairing_store()
+    pairings.force_pair_owner("webui", "42", "owner")
+    bridge = _RecordingBridge()
+    app_client.app.state.agent_bridge = bridge
+
+    with app_client.websocket_connect(f"/v1/channels/webui?token={install_token}") as ws:
+        ws.send_text(_envelope("before revocation"))
+        assert ws.receive_json()["text"] == "S16 answered before revocation"
+
+        assert pairings.revoke("webui", "42") is True
+
+        ws.send_text(_envelope("after revocation"))
+        refused = ws.receive_json()
+
+    assert refused["error"].startswith("dropped:")
+    assert [m.text for m in bridge.messages] == ["before revocation"]
+
+
+def test_pairing_an_owner_takes_effect_on_a_live_connection(app_client, install_token):
+    """The mirror case: a fresh pairing must not wait for a reconnect either."""
+    bridge = _RecordingBridge()
+    app_client.app.state.agent_bridge = bridge
+
+    with app_client.websocket_connect(f"/v1/channels/webui?token={install_token}") as ws:
+        ws.send_text(_envelope("before pairing"))
+        assert ws.receive_json()["error"].startswith("dropped:")
+
+        get_pairing_store().force_pair_owner("webui", "42", "owner")
+
+        ws.send_text(_envelope("after pairing"))
+        assert ws.receive_json()["text"] == "S16 answered after pairing"
+
+    assert [m.text for m in bridge.messages] == ["after pairing"]

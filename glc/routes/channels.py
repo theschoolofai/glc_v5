@@ -89,7 +89,6 @@ async def channel_ws(websocket: WebSocket, name: str, token: str | None = Query(
 
     limiter = get_rate_limiter()
     pairings = get_pairing_store()
-    owners = [p.channel_user_id for p in pairings.owners(channel=name)]
 
     try:
         while True:
@@ -105,6 +104,12 @@ async def channel_ws(websocket: WebSocket, name: str, token: str | None = Query(
                 await websocket.send_text(json.dumps({"error": "envelope channel does not match route"}))
                 continue
             env = _verified_identity(env, pairings)
+
+            # Re-read per message, exactly like the trust level above. An adapter
+            # connection outlives any number of pairing changes, so a snapshot
+            # taken at connect time would keep serving a revoked owner and keep
+            # ignoring a newly paired one until the adapter reconnected.
+            owners = [p.channel_user_id for p in pairings.owners(channel=name)]
 
             ok, why = allowed(
                 env.channel,
