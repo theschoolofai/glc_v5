@@ -173,6 +173,14 @@ async def channel_webhook_verify(name: str, request: Request):
     token = params.get("hub.verify_token", "")
     challenge = params.get("hub.challenge", "")
     expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "")
+    # Fail closed when the channel has no verify token configured. Without
+    # this, `expected` is "" and compare_digest("", "") is True, so an
+    # unconfigured channel would hand its challenge back to anyone who asked
+    # — which is exactly the check that is supposed to prove the caller owns
+    # the endpoint. Same posture as the signature verifiers in
+    # channels/catalogue/*: a missing secret means unverifiable, not verified.
+    if not expected:
+        raise HTTPException(status_code=403, detail=f"{name} has no verify token configured")
     if mode == "subscribe" and hmac.compare_digest(token, expected):
         return PlainTextResponse(challenge)
     raise HTTPException(status_code=403)

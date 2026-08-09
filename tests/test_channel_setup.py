@@ -76,6 +76,40 @@ def test_only_meta_get_verification_is_exposed(app_client):
     assert app_client.get("/v1/channels/whatsapp/webhook").status_code == 403
 
 
+def _hub(token: str, challenge: str = "challenge-123") -> dict[str, str]:
+    return {"hub.mode": "subscribe", "hub.verify_token": token, "hub.challenge": challenge}
+
+
+def test_meta_verification_fails_closed_when_no_verify_token_is_configured(
+    app_client, monkeypatch
+):
+    """An unconfigured channel must not validate anyone's webhook subscription.
+
+    `expected` falls back to "" when WHATSAPP_VERIFY_TOKEN is unset, and
+    hmac.compare_digest("", "") is True -- so before the fix this returned 200
+    with the caller's challenge echoed back, letting a stranger complete Meta's
+    ownership handshake against someone else's gateway.
+    """
+    monkeypatch.delenv("WHATSAPP_VERIFY_TOKEN", raising=False)
+
+    result = app_client.get("/v1/channels/whatsapp/webhook", params=_hub(""))
+    assert result.status_code == 403
+    assert "challenge-123" not in result.text
+
+
+def test_meta_verification_accepts_only_the_configured_token(app_client, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "s3cret-verify-token")
+
+    ok = app_client.get("/v1/channels/whatsapp/webhook", params=_hub("s3cret-verify-token"))
+    assert ok.status_code == 200
+    assert ok.text == "challenge-123"
+
+    for wrong in ("", "s3cret", "s3cret-verify-token-extra", "wrong"):
+        denied = app_client.get("/v1/channels/whatsapp/webhook", params=_hub(wrong))
+        assert denied.status_code == 403, f"token {wrong!r} must not verify"
+        assert "challenge-123" not in denied.text
+
+
 def test_rejects_unknown_channel_and_unknown_setting(app_client, install_token):
     missing = app_client.put("/v1/channel-admin/not-real", headers=_auth(install_token), json={"enabled": True})
     assert missing.status_code == 404
