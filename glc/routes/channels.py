@@ -172,8 +172,12 @@ async def channel_webhook_verify(name: str, request: Request):
     mode = params.get("hub.mode", "")
     token = params.get("hub.verify_token", "")
     challenge = params.get("hub.challenge", "")
-    expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "")
-    if mode == "subscribe" and hmac.compare_digest(token, expected):
+    # Fail closed when the token is unconfigured. Without the emptiness check,
+    # `expected` defaults to "" and compare_digest("", "") is True, so a fresh
+    # checkout answers the challenge for anyone who sends an empty token — the
+    # caller could then subscribe this endpoint to their own Meta app.
+    expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "").strip()
+    if expected and mode == "subscribe" and hmac.compare_digest(token, expected):
         return PlainTextResponse(challenge)
     raise HTTPException(status_code=403)
 
