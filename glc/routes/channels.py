@@ -16,6 +16,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -185,13 +186,61 @@ async def channel_webhook(name: str, request: Request):
     except KeyError:
         raise HTTPException(status_code=404, detail=f"unknown channel: {name}") from None
 
-    raw = {
-        "raw_body": await request.body(),
-        "headers": dict(request.headers),
-    }
-    msg = await adapter.on_message(raw)
+    body = await request.body()
+    raw = {"raw_body": body, "headers": dict(request.headers)}
+
+    # An adapter that ships a webhook verifier is telling us this endpoint is
+    # authenticated. Call it. `twilio_voice.authenticate_webhook` has existed,
+    # documented and unit-tested -- including a fail-closed case -- while
+    # nothing in the request path ever invoked it. Those tests proved the
+    # algorithm and proved nothing about the endpoint. A verifier with no
+    # caller is not a control, and it is worse than none, because it reads
+    # like one.
+    authenticate = getattr(adapter, "authenticate_webhook", None)
+    if callable(authenticate):
+        form = dict(parse_qsl(body.decode("utf-8", "replace"), keep_blank_values=True))
+        if not authenticate(form, url=str(request.url),
+                            signature=request.headers.get("X-Twilio-Signature")):
+            audit_append(
+                channel=name, channel_user_id="", trust_level="untrusted",
+                event_type="webhook_signature_rejected",
+                result={"reason": "signature did not verify"},
+            )
+            raise HTTPException(status_code=403, detail="invalid webhook signature")
+
+    try:
+        msg = await adapter.on_message(raw)
+    except Exception as error:
+        # The payload is attacker-supplied and every adapter parses it
+        # differently: `line` reads raw["events"][0] and raised KeyError
+        # straight out of an unauthenticated POST, so anyone who knew the URL
+        # could turn this route into 500s. A parse failure is a bad request,
+        # and it should leave a trace rather than only a stack trace.
+        audit_append(
+            channel=name, channel_user_id="", trust_level="untrusted",
+            event_type="webhook_unparseable",
+            result={"error": f"{type(error).__name__}: {error}"},
+        )
+        raise HTTPException(
+            status_code=400, detail=f"{name} could not parse this webhook payload"
+        ) from error
+
     if msg is None:
         return {"status": "ok"}
+
+    # Adapters that do not understand this route's payload shape mostly do not
+    # fail -- several hand back an envelope with no sender at all, which then
+    # flows on to the allowlist and the audit log as though a real message had
+    # arrived. An unattributable message is not a message.
+    if not msg.channel_user_id:
+        audit_append(
+            channel=name, channel_user_id="", trust_level="untrusted",
+            event_type="webhook_unattributed",
+            result={"reason": "adapter returned an envelope with no sender"},
+        )
+        raise HTTPException(
+            status_code=400, detail=f"{name} produced no sender for this payload"
+        )
 
     limiter = get_rate_limiter()
     pairings = get_pairing_store()
