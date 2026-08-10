@@ -25,7 +25,8 @@
 
 services:
   jaeger:
-    image: jaegertracing/all-in-one:2.20.0
+    # Jaeger v2's all-in-one image is published from the jaeger repository.
+    image: jaegertracing/jaeger:2.20.0
     container_name: glc-jaeger
     restart: unless-stopped
     ports:

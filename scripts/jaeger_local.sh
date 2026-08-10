@@ -63,12 +63,24 @@ status() {
 
 case "${1:-run}" in
   --stop)
-    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
-    rm -f "$PIDFILE"; echo "stopped" ;;
+    if [ -f "$PIDFILE" ]; then
+      pid="$(cat "$PIDFILE")"
+      kill "$pid" 2>/dev/null || true
+      for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+      if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null || true; sleep 1; fi
+      rm -f "$PIDFILE"
+    fi
+    if curl -fsS --max-time 3 "http://localhost:$UI_PORT/api/services" >/dev/null 2>&1; then
+      echo "still serving on port $UI_PORT - not stopped" >&2
+      command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$UI_PORT" -sTCP:LISTEN >&2 || true
+      exit 1
+    fi
+    echo "stopped" ;;
   --status) status ;;
   --start)
     fetch
-    ( cd "$PREFIX/$NAME" && nohup ./jaeger >"$LOG" 2>&1 & echo $! >"$PIDFILE" )
+    ( cd "$PREFIX/$NAME" && exec nohup ./jaeger >"$LOG" 2>&1 ) &
+    echo $! >"$PIDFILE"
     for _ in $(seq 1 30); do sleep 1; status >/dev/null 2>&1 && break; done
     status || { echo "--- last 20 log lines"; tail -20 "$LOG"; exit 1; } ;;
   *)
