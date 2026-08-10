@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 
+from tests._acl_assertions import assert_restricted_to_owner
+
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
@@ -34,9 +36,10 @@ def test_secret_save_never_round_trips_and_requires_restart(app_client, install_
     )
     assert result.status_code == 200
     assert result.json()["restart_required"] is True
-    raw = (tmp_path / "cfg" / "channel_secrets.json").read_text()
+    secrets_path = tmp_path / "cfg" / "channel_secrets.json"
+    raw = secrets_path.read_text()
     assert "not-for-the-browser" in raw
-    assert (tmp_path / "cfg" / "channel_secrets.json").stat().st_mode & 0o077 == 0
+    assert_restricted_to_owner(secrets_path)
 
     catalogue = app_client.get("/v1/channel-admin/catalogue", headers=_auth(install_token))
     assert "not-for-the-browser" not in catalogue.text
