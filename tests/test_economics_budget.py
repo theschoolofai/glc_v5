@@ -29,14 +29,20 @@ def _ctl(tmp_path, monkeypatch, yaml_text: str) -> B.BudgetController:
     return B.reload_controller()
 
 
-def _spend(usd_input_mtok: float, **principal_kw):
-    """Burn a known number of dollars through the real meter."""
+def _spend(usd_input_mtok: float, reservation_id: int | None = None, **principal_kw):
+    """Burn a known number of dollars through the real meter.
+
+    Pass `reservation_id` (an `Admission.reservation_id`) when this spend is
+    settling a call `admit()` already reserved a hold for — otherwise the
+    hold stays open *and* this write lands, double-counting the same call.
+    """
     M.get_meter().record(
         provider="gemini_1",
         model="gemini-3.1-flash-lite",  # $0.25 in / $1.50 out per Mtok
         principal=M.Principal(**principal_kw),
         usage=M.Usage(input_tokens=int(usd_input_mtok / 0.25 * 1_000_000)),
         status="ok",
+        reservation_id=reservation_id,
     )
 
 
@@ -73,7 +79,10 @@ def test_admission_refuses_when_the_projection_would_breach(tmp_path, monkeypatc
     assert env["code"] == B.BUDGET_EXCEEDED
     assert env["limit_usd"] == 0.10
     assert env["projected_usd"] == 0.5
-    assert env["shortfall_usd"] == pytest.approx(0.4)
+    # `ok`'s $0.05 is a reserved hold now, not merely a refusal that wrote
+    # nothing — it counts against `bad`'s check the same way a completed call
+    # would, so remaining is $0.05 and the shortfall is 0.5 - 0.05.
+    assert env["shortfall_usd"] == pytest.approx(0.45)
     assert "nothing was billed" in env["hint"]
 
 
@@ -84,11 +93,13 @@ def test_spend_accumulates_and_then_the_gate_closes(tmp_path, monkeypatch):
         "version: 1\npolicies:\n  - principal: 'session:*'\n    limit_usd: 0.10\n    period: lifetime\n",
     )
     p = M.Principal(session="run-1")
-    assert ctl.admit(p, 0.04).allowed is True
-    _spend(0.04, session="run-1")
+    first = ctl.admit(p, 0.04)
+    assert first.allowed is True
+    _spend(0.04, session="run-1", reservation_id=first.reservation_id)
     assert ctl.status_for("session", "run-1").spent_usd == pytest.approx(0.04)
-    assert ctl.admit(p, 0.04).allowed is True
-    _spend(0.04, session="run-1")
+    second = ctl.admit(p, 0.04)
+    assert second.allowed is True
+    _spend(0.04, session="run-1", reservation_id=second.reservation_id)
     # 0.08 spent, 0.02 left: a 0.04 call no longer fits.
     assert ctl.admit(p, 0.04).allowed is False
     # but a small one still does
@@ -109,9 +120,10 @@ def test_denial_of_wallet_loop_is_stopped_by_the_controller(tmp_path, monkeypatc
     p = M.Principal(session="runaway")
     admitted = refused = 0
     for _ in range(500):  # an adversary with no intention of stopping
-        if ctl.admit(p, 0.01).allowed:
+        a = ctl.admit(p, 0.01)
+        if a.allowed:
             admitted += 1
-            _spend(0.01, session="runaway")
+            _spend(0.01, session="runaway", reservation_id=a.reservation_id)
         else:
             refused += 1
     total = db.spend_usd("session", "runaway", since=0)

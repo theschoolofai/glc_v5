@@ -59,6 +59,16 @@ V4_COLUMNS: dict[str, str] = {
     "usd_saved": "REAL DEFAULT 0",
 }
 
+# v5: the budget hold/release pattern (Candidate D). `status` gains two more
+# values, 'pending' (a hold) and 'released' (a resolved hold, dollar figure
+# untouched forever) alongside the existing 'ok'/'error'. `reservation_id` is
+# set only on a settlement row, pointing back at the hold it resolved — purely
+# for a human debugging later; the running total never needs it (status alone
+# decides what counts, see `spend_usd`).
+V5_COLUMNS: dict[str, str] = {
+    "reservation_id": "INTEGER",
+}
+
 #: Attribution dimensions, coarsest first. These are ledger *columns*, so the
 #: list is structural; which values appear in them is entirely caller-supplied.
 PRINCIPAL_DIMENSIONS: tuple[str, ...] = ("tenant", "project", "user", "agent", "session")
@@ -75,7 +85,7 @@ def migrate() -> list[str]:
         have = _existing_columns(c)
         if not have:
             return added  # table does not exist yet; init() creates it complete
-        for name, decl in V4_COLUMNS.items():
+        for name, decl in {**V4_COLUMNS, **V5_COLUMNS}.items():
             if name not in have:
                 c.execute(f'ALTER TABLE calls ADD COLUMN "{name}" {decl}')
                 added.append(name)
@@ -125,7 +135,8 @@ def init() -> None:
     migrate()
 
 
-def log_call(
+def _insert_call(
+    c,
     provider,
     model,
     input_tokens=0,
@@ -162,64 +173,99 @@ def log_call(
     escalations=0,
     tokens_saved=0,
     usd_saved=0.0,
+    # ── v5: set only on a settlement row, see `settle_call`. ──
+    reservation_id=None,
 ) -> int:
-    """Append one row to the ledger. Returns the new row id.
+    """The INSERT itself, on a connection the caller already has open.
+    `log_call` and `log_call_tx` are the two entry points — same statement,
+    different transaction ownership."""
+    cur = c.execute(
+        """INSERT INTO calls (ts, provider, model, input_tokens, output_tokens,
+                              cache_create_tokens, cache_read_tokens,
+                              latency_ms, status, error, prompt_chars, response_chars,
+                              override, attempted, tool_calls, reasoning_applied, tool_dialect,
+                              call_role, router_decision, embed_dim,
+                              agent, session, retries,
+                              tenant, project, "user", usd, price_source,
+                              cache_hit, cache_kind, role, tier, escalations,
+                              tokens_saved, usd_saved, reservation_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                   ?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            time.time(),
+            provider,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_create_tokens,
+            cache_read_tokens,
+            latency_ms,
+            status,
+            error,
+            prompt_chars,
+            response_chars,
+            override,
+            attempted,
+            tool_calls,
+            1 if reasoning_applied else 0,
+            tool_dialect,
+            call_role,
+            router_decision,
+            embed_dim,
+            agent,
+            session,
+            retries,
+            tenant,
+            project,
+            user,
+            float(usd or 0.0),
+            price_source,
+            1 if cache_hit else 0,
+            cache_kind,
+            role,
+            tier,
+            int(escalations or 0),
+            int(tokens_saved or 0),
+            float(usd_saved or 0.0),
+            reservation_id,
+        ),
+    )
+    return int(cur.lastrowid or 0)
+
+
+def log_call(*args, **kwargs) -> int:
+    """Append one row to the ledger, on its own connection. Returns the new
+    row id.
 
     v3 returned None; returning the id is additive (nothing inspected the
     return value) and lets the meter hand a row reference to the span.
     """
     with conn() as c:
-        cur = c.execute(
-            """INSERT INTO calls (ts, provider, model, input_tokens, output_tokens,
-                                  cache_create_tokens, cache_read_tokens,
-                                  latency_ms, status, error, prompt_chars, response_chars,
-                                  override, attempted, tool_calls, reasoning_applied, tool_dialect,
-                                  call_role, router_decision, embed_dim,
-                                  agent, session, retries,
-                                  tenant, project, "user", usd, price_source,
-                                  cache_hit, cache_kind, role, tier, escalations,
-                                  tokens_saved, usd_saved)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                       ?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                time.time(),
-                provider,
-                model,
-                input_tokens,
-                output_tokens,
-                cache_create_tokens,
-                cache_read_tokens,
-                latency_ms,
-                status,
-                error,
-                prompt_chars,
-                response_chars,
-                override,
-                attempted,
-                tool_calls,
-                1 if reasoning_applied else 0,
-                tool_dialect,
-                call_role,
-                router_decision,
-                embed_dim,
-                agent,
-                session,
-                retries,
-                tenant,
-                project,
-                user,
-                float(usd or 0.0),
-                price_source,
-                1 if cache_hit else 0,
-                cache_kind,
-                role,
-                tier,
-                int(escalations or 0),
-                int(tokens_saved or 0),
-                float(usd_saved or 0.0),
-            ),
-        )
-        return int(cur.lastrowid or 0)
+        return _insert_call(c, *args, **kwargs)
+
+
+def log_call_tx(c, *args, **kwargs) -> int:
+    """`log_call`, on a connection the caller already has open — so a hold
+    row can be inserted inside the same transaction as the spend check that
+    approved it. See `BudgetController.admit`."""
+    return _insert_call(c, *args, **kwargs)
+
+
+def settle_call(hold_id: int, **fields) -> int:
+    """Insert a call's real settlement row and release the hold it resolves
+    to, as one transaction.
+
+    A gap between these two writes would recreate a smaller version of the
+    race this exists to close — a window where neither the hold nor the
+    settlement counts, briefly under-stating spend. The hold's `usd` is
+    never touched, only its `status` flips `'pending' -> 'released'`, so the
+    worst-case figure that justified (or refused) some other request stays
+    on the record forever.
+    """
+    with conn() as c:
+        row_id = _insert_call(c, reservation_id=hold_id, **fields)
+        c.execute("UPDATE calls SET status='released' WHERE id=? AND status='pending'", (hold_id,))
+        return row_id
 
 
 # ── v4 principal rollups ────────────────────────────────────────────────────
@@ -243,6 +289,25 @@ def _period_start(period: str, now: float | None = None) -> float:
     return now - (now % 86400)
 
 
+def _spend_usd_query(c, dimension: str, value: str, since: float, include_errors: bool) -> float:
+    if dimension not in PRINCIPAL_DIMENSIONS:
+        raise ValueError(
+            f"unknown attribution dimension {dimension!r}; expected one of {PRINCIPAL_DIMENSIONS}"
+        )
+    # 'pending' (an open hold) always counts — it is worst-case money that may
+    # still land, and the conservative direction for a ceiling is to count it.
+    # 'released' never counts — it is a resolved hold whose real cost was
+    # replaced by its settlement row; summing both would double-count the call.
+    statuses = ("ok", "error", "pending") if include_errors else ("ok", "pending")
+    placeholders = ",".join("?" * len(statuses))
+    q = (
+        f'SELECT COALESCE(SUM(usd), 0) AS total FROM calls '
+        f'WHERE "{dimension}" = ? AND ts >= ? AND status IN ({placeholders})'
+    )
+    row = c.execute(q, (value, since, *statuses)).fetchone()
+    return float(row["total"] or 0.0)
+
+
 def spend_usd(dimension: str, value: str, since: float = 0.0, include_errors: bool = True) -> float:
     """Total dollars attributed to one principal since `since`.
 
@@ -251,16 +316,15 @@ def spend_usd(dimension: str, value: str, since: float = 0.0, include_errors: bo
     logged, and there is no way to spend without the budget seeing it — the
     meter's ledger write is the same event the budget reads.
     """
-    if dimension not in PRINCIPAL_DIMENSIONS:
-        raise ValueError(
-            f"unknown attribution dimension {dimension!r}; expected one of {PRINCIPAL_DIMENSIONS}"
-        )
-    q = f'SELECT COALESCE(SUM(usd), 0) AS total FROM calls WHERE "{dimension}" = ? AND ts >= ?'
-    if not include_errors:
-        q += " AND status='ok'"
     with conn() as c:
-        row = c.execute(q, (value, since)).fetchone()
-        return float(row["total"] or 0.0)
+        return _spend_usd_query(c, dimension, value, since, include_errors)
+
+
+def spend_usd_tx(c, dimension: str, value: str, since: float = 0.0, include_errors: bool = True) -> float:
+    """`spend_usd`, on a connection the caller already has open — so the
+    check and the hold it gates share one transaction. See
+    `BudgetController.admit`."""
+    return _spend_usd_query(c, dimension, value, since, include_errors)
 
 
 def by_principal(

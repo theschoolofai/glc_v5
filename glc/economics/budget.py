@@ -130,6 +130,11 @@ class Admission:
     warnings: list[BudgetStatus] = field(default_factory=list)
     reason: str = ""
     enforced: bool = True
+    #: The ledger row id of the 'pending' hold `admit()` reserved, when
+    #: allowed. The caller passes it back to `Meter.record()` so the hold
+    #: can be released and settled instead of leaving it open forever. None
+    #: when refused (nothing was reserved) or enforcement is disabled.
+    reservation_id: int | None = None
 
     @property
     def shortfall_usd(self) -> float:
@@ -367,15 +372,18 @@ class BudgetController:
             return None
         return max(matches, key=self._specificity)
 
-    def status_for(self, dimension: str, value: str) -> BudgetStatus | None:
+    def status_for(self, dimension: str, value: str, c=None) -> BudgetStatus | None:
         pol = self.policy_for(dimension, value)
         if pol is None:
             return None
-        return self._status(pol, value)
+        return self._status(pol, value, c=c)
 
-    def _status(self, pol: BudgetPolicy, value: str) -> BudgetStatus:
+    def _status(self, pol: BudgetPolicy, value: str, c=None) -> BudgetStatus:
         start = db._period_start(pol.period)
-        spent = db.spend_usd(pol.dimension, value, since=start, include_errors=pol.include_errors)
+        if c is not None:
+            spent = db.spend_usd_tx(c, pol.dimension, value, since=start, include_errors=pol.include_errors)
+        else:
+            spent = db.spend_usd(pol.dimension, value, since=start, include_errors=pol.include_errors)
         return BudgetStatus(
             principal=f"{pol.dimension}:{value}",
             dimension=pol.dimension,
@@ -387,11 +395,16 @@ class BudgetController:
             source=pol.source,
         )
 
-    def statuses(self, principal: Principal) -> list[BudgetStatus]:
-        """One status per governed dimension the principal actually carries."""
+    def statuses(self, principal: Principal, c=None) -> list[BudgetStatus]:
+        """One status per governed dimension the principal actually carries.
+
+        `c`, when given, is an already-open connection (see `admit`): every
+        spend read runs on it instead of each opening its own, so the reads
+        and the hold they gate are one transaction.
+        """
         out = []
         for dim, value in principal.present().items():
-            st = self.status_for(dim, value)
+            st = self.status_for(dim, value, c=c)
             if st is not None:
                 out.append(st)
         return out
@@ -430,12 +443,26 @@ class BudgetController:
         self,
         principal: Principal,
         projected_usd: float,
+        provider: str = "",
+        model: str | None = None,
     ) -> Admission:
         """Decide whether a call costing at most `projected_usd` may proceed.
 
         Returns a verdict rather than raising, so the caller (which knows
         whether it is inside a cascade and could retry at a cheaper tier) picks
         the response.
+
+        When allowed, a 'pending' hold for `projected_usd` is written to the
+        ledger in the same transaction as the check, and its row id comes
+        back as `Admission.reservation_id` — the caller passes that to
+        `Meter.record()` once the call finishes, to release the hold and
+        settle the real cost. Until then, the hold counts as committed
+        spend, so a second concurrent `admit()` sees it: reading spend and
+        writing the hold used to be two separate steps with an `await` for
+        the provider call in between, so two concurrent callers could both
+        read the spend from before either had recorded anything, and both
+        would be admitted. `provider`/`model` are only needed to fill the
+        hold row's (NOT NULL) columns; they play no part in the decision.
         """
         if not self.enabled:
             return Admission(
@@ -444,50 +471,61 @@ class BudgetController:
                 enforced=False,
                 reason="budget enforcement disabled in budgets.yaml",
             )
-        statuses = self.statuses(principal)
-        if not statuses:
-            allow_unmatched = str(self.defaults.get("unmatched", "allow")) == "allow"
-            return Admission(
-                allowed=allow_unmatched,
-                projected_usd=projected_usd,
-                reason=(
-                    "no budget policy matches this principal"
-                    if allow_unmatched
-                    else "no budget policy matches this principal and defaults.unmatched=deny"
-                ),
+        with db.conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            statuses = self.statuses(principal, c=c)
+            if not statuses:
+                allow_unmatched = str(self.defaults.get("unmatched", "allow")) == "allow"
+                return Admission(
+                    allowed=allow_unmatched,
+                    projected_usd=projected_usd,
+                    reason=(
+                        "no budget policy matches this principal"
+                        if allow_unmatched
+                        else "no budget policy matches this principal and defaults.unmatched=deny"
+                    ),
+                )
+            warn_at = float(self.alerts.get("warn_at_fraction", 1.1))
+            warnings = []
+            breached = None
+            for st in statuses:
+                if st.spent_usd + projected_usd > st.limit_usd:
+                    # Report the tightest breach, so the caller sees the binding
+                    # constraint rather than whichever dimension happened to be first.
+                    if breached is None or st.remaining_usd < breached.remaining_usd:
+                        breached = st
+                elif st.fraction_used >= warn_at:
+                    warnings.append(st)
+            if breached is not None:
+                return Admission(
+                    allowed=False,
+                    projected_usd=projected_usd,
+                    checked=statuses,
+                    breached=breached,
+                    warnings=warnings,
+                    reason=(
+                        f"{breached.principal} would exceed its {breached.period} budget: "
+                        f"spent ${breached.spent_usd:.6f} of ${breached.limit_usd:.6f}, "
+                        f"this call projects ${projected_usd:.6f} "
+                        f"(${breached.remaining_usd:.6f} remaining)"
+                    ),
+                )
+            reservation_id = db.log_call_tx(
+                c,
+                provider=provider or "",
+                model=model or "",
+                status="pending",
+                usd=projected_usd,
+                **principal.as_dict(),
             )
-        warn_at = float(self.alerts.get("warn_at_fraction", 1.1))
-        warnings = []
-        breached = None
-        for st in statuses:
-            if st.spent_usd + projected_usd > st.limit_usd:
-                # Report the tightest breach, so the caller sees the binding
-                # constraint rather than whichever dimension happened to be first.
-                if breached is None or st.remaining_usd < breached.remaining_usd:
-                    breached = st
-            elif st.fraction_used >= warn_at:
-                warnings.append(st)
-        if breached is not None:
             return Admission(
-                allowed=False,
+                allowed=True,
                 projected_usd=projected_usd,
                 checked=statuses,
-                breached=breached,
                 warnings=warnings,
-                reason=(
-                    f"{breached.principal} would exceed its {breached.period} budget: "
-                    f"spent ${breached.spent_usd:.6f} of ${breached.limit_usd:.6f}, "
-                    f"this call projects ${projected_usd:.6f} "
-                    f"(${breached.remaining_usd:.6f} remaining)"
-                ),
+                reason="within budget",
+                reservation_id=reservation_id,
             )
-        return Admission(
-            allowed=True,
-            projected_usd=projected_usd,
-            checked=statuses,
-            warnings=warnings,
-            reason="within budget",
-        )
 
     def affordable_usd(self, principal: Principal) -> float | None:
         """Tightest remaining allowance, or None when ungoverned.

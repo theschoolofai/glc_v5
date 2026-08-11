@@ -58,7 +58,7 @@ def test_migration_is_additive_over_a_real_v3_table(monkeypatch, tmp_path):
     raw.close()
 
     added = db.migrate()
-    assert set(added) == set(db.V4_COLUMNS)
+    assert set(added) == set(db.V4_COLUMNS) | set(db.V5_COLUMNS)
 
     # v3 row is intact and still readable by the v3 query
     rows = db.recent(limit=10)
