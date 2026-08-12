@@ -76,7 +76,9 @@ async def channel_ws(websocket: WebSocket, name: str, token: str | None = Query(
     elif token:
         presented = token
     expected = get_or_create_install_token()
-    if presented != expected:
+    # Fail closed when the install token is missing/empty or the client omitted one.
+    # ``"" == ""`` would otherwise accept unauthenticated adapter sockets.
+    if not expected or not presented or presented != expected:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -172,8 +174,9 @@ async def channel_webhook_verify(name: str, request: Request):
     mode = params.get("hub.mode", "")
     token = params.get("hub.verify_token", "")
     challenge = params.get("hub.challenge", "")
-    expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "")
-    if mode == "subscribe" and hmac.compare_digest(token, expected):
+    expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "").strip()
+    # Missing verify secret must deny the challenge. compare_digest("", "") is True.
+    if mode == "subscribe" and expected and hmac.compare_digest(token, expected):
         return PlainTextResponse(challenge)
     raise HTTPException(status_code=403)
 
