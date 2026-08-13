@@ -61,6 +61,7 @@ class Adapter(ChannelAdapter):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
         self._client: GmailClient | None = self.config.get("client") or self.config.get("mock")
+        self._rfc_ids: dict[str, str] = {}
 
     def _get_client(self) -> GmailClient:
         """Return the Gmail client (mock or live).
@@ -160,6 +161,7 @@ class Adapter(ChannelAdapter):
         # Person 6: parse body and attachments
         text_body = self._extract_text_plain(email_msg)
         attachments = self._extract_attachments(email_msg)
+        self._remember_rfc_id(thread_id, email_msg)
 
         return ChannelMessage(
             channel="gmail",
@@ -207,6 +209,7 @@ class Adapter(ChannelAdapter):
 
             text_body = self._extract_text_plain(email_msg)
             attachments = self._extract_attachments(email_msg)
+            self._remember_rfc_id(thread_id, email_msg)
 
             results.append(
                 ChannelMessage(
@@ -416,6 +419,11 @@ class Adapter(ChannelAdapter):
             return addr.split("<")[1].split(">")[0]
         return addr.strip()
 
+    def _remember_rfc_id(self, thread_id: str | None, email_msg: EmailMessage) -> None:
+        rfc_id = (email_msg.get("Message-ID") or "").strip()
+        if thread_id and rfc_id:
+            self._rfc_ids[thread_id] = rfc_id
+
     # ──────────────────────────────────────────────────────────────────
     # Person 8 (Shwetha): Reply formatter
     # ──────────────────────────────────────────────────────────────────
@@ -437,9 +445,12 @@ class Adapter(ChannelAdapter):
         msg["From"] = os.getenv("GMAIL_BOT_ADDRESS", "me")
         msg["Subject"] = "Re: conversation"
 
-        if reply.thread_id:
-            msg["In-Reply-To"] = reply.thread_id
-            msg["References"] = reply.thread_id
+        # Gmail's threadId belongs in the API body, not in RFC headers.
+        # In-Reply-To / References must be the inbound Message-ID.
+        rfc_id = self._rfc_ids.get(reply.thread_id or "")
+        if rfc_id:
+            msg["In-Reply-To"] = rfc_id
+            msg["References"] = rfc_id
 
         msg.set_content(reply.text or "")
 
