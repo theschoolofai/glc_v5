@@ -172,8 +172,18 @@ async def channel_webhook_verify(name: str, request: Request):
     mode = params.get("hub.mode", "")
     token = params.get("hub.verify_token", "")
     challenge = params.get("hub.challenge", "")
-    expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "")
-    if mode == "subscribe" and hmac.compare_digest(token, expected):
+    expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "").strip()
+    # Fail closed. compare_digest("", "") is True, so an unset verify token
+    # used to complete Meta's handshake for anyone who sent an empty
+    # hub.verify_token. A missing token is a 503, not an open door.
+    if mode != "subscribe":
+        raise HTTPException(status_code=403)
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{name.upper()}_VERIFY_TOKEN is not configured; webhook verification refuses to serve without it",
+        )
+    if hmac.compare_digest(token, expected):
         return PlainTextResponse(challenge)
     raise HTTPException(status_code=403)
 

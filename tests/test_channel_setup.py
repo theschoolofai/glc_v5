@@ -76,6 +76,36 @@ def test_only_meta_get_verification_is_exposed(app_client):
     assert app_client.get("/v1/channels/whatsapp/webhook").status_code == 403
 
 
+def test_whatsapp_hub_verify_fails_closed_when_the_token_is_unset(app_client, monkeypatch):
+    """An unset WHATSAPP_VERIFY_TOKEN plus an empty hub.verify_token used to
+    satisfy hmac.compare_digest and return the challenge. That is a completed
+    Meta handshake on a machine that never configured a secret.
+    """
+    monkeypatch.delenv("WHATSAPP_VERIFY_TOKEN", raising=False)
+    stolen = app_client.get(
+        "/v1/channels/whatsapp/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "pwned"},
+    )
+    assert stolen.status_code == 503
+    assert "WHATSAPP_VERIFY_TOKEN" in stolen.json()["detail"]
+    assert stolen.text != "pwned"
+
+
+def test_whatsapp_hub_verify_accepts_only_the_configured_token(app_client, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "only-this-string")
+    denied = app_client.get(
+        "/v1/channels/whatsapp/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "guess", "hub.challenge": "nope"},
+    )
+    assert denied.status_code == 403
+    accepted = app_client.get(
+        "/v1/channels/whatsapp/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "only-this-string", "hub.challenge": "ok"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.text == "ok"
+
+
 def test_rejects_unknown_channel_and_unknown_setting(app_client, install_token):
     missing = app_client.put("/v1/channel-admin/not-real", headers=_auth(install_token), json={"enabled": True})
     assert missing.status_code == 404
