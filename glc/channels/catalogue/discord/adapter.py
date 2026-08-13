@@ -25,7 +25,7 @@ from glc.channels.base import ChannelAdapter
 from glc.channels.catalogue.discord.schemas import DiscordCreateMessage, DiscordMessage
 from glc.channels.envelope import ChannelMessage, ChannelReply
 from glc.security.allowlists import allowed
-from glc.security.pairing import get_pairing_store
+from glc.security.pairing import get_pairing_store, unpaired_outbound
 from glc.security.trust_level import classify
 
 CHANNEL = "discord"
@@ -140,6 +140,9 @@ class Adapter(ChannelAdapter):
     # ── outbound: ChannelReply → Discord create-message ───────────────────
 
     async def send(self, reply: ChannelReply) -> Any:
+        blocked = unpaired_outbound(CHANNEL, reply.channel_user_id)
+        if blocked is not None:
+            return blocked
         api = self._api
         if api is None:
             raise RuntimeError("discord adapter: no transport configured (config['mock'|'client'])")

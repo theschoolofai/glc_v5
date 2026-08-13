@@ -33,7 +33,7 @@ from glc.channels.catalogue.gmail.schemas import (
 )
 from glc.channels.envelope import Attachment, ChannelMessage, ChannelReply
 from glc.security.allowlists import allowed
-from glc.security.pairing import get_pairing_store
+from glc.security.pairing import get_pairing_store, unpaired_outbound
 from glc.security.trust_level import TrustLevel, classify
 
 logger = logging.getLogger(__name__)
@@ -228,6 +228,9 @@ class Adapter(ChannelAdapter):
     # ──────────────────────────────────────────────────────────────────
 
     async def send(self, reply: ChannelReply) -> Any:
+        blocked = unpaired_outbound(self.name, reply.channel_user_id)
+        if blocked is not None:
+            return blocked
         # Person 8 (Shwetha): format the reply as MIME
         raw = self._format_reply(reply)
 

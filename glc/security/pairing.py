@@ -215,3 +215,15 @@ def get_pairing_store() -> PairingStore:
     if _singleton is None:
         _singleton = PairingStore()
     return _singleton
+
+
+def unpaired_outbound(channel: str, channel_user_id: str) -> dict[str, str] | None:
+    """Block a send to an address that has never been paired.
+
+    WhatsApp already refuses this. Telegram, Gmail, Discord and IMAP did not,
+    so a stolen bridge token (or a confused agent) could message anyone the
+    bot can still reach.
+    """
+    if get_pairing_store().lookup(channel, channel_user_id) is None:
+        return {"error": "recipient not paired", "code": "outbound_blocked"}
+    return None
