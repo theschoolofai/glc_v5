@@ -94,12 +94,29 @@ class ImapConnection:
         """Return unseen messages as a list of {"uid": int, "raw": bytes}.
 
         In mock mode: returns mock.inbound_events as-is.
-        In live mode: SEARCH UNSEEN → FETCH (RFC822) for each UID.
+        In live mode: NOOP → SEARCH UNSEEN → FETCH (RFC822) for each UID.
+
+        The NOOP is not decoration. A selected mailbox does not refresh itself:
+        the server reports newly arrived messages by sending an untagged EXISTS,
+        and it may only do so during a command that permits one. Polling SEARCH
+        on a long-lived selection therefore keeps returning the set that existed
+        when SELECT ran, and mail arriving afterwards is invisible for the life
+        of the connection.
+
+        The symptom is badly misleading. Mail that arrives while the poller is
+        *stopped* is delivered the moment it next starts, because connecting
+        performs a fresh SELECT. Mail that arrives while it is *running* is
+        never seen. So the adapter looks like it works, right up until it is
+        left running, which is the only way it is ever actually used.
         """
         if self.mock is not None:
             return list(self.mock.inbound_events)
 
         assert self._conn is not None, "call connect() first"
+        # Before SEARCH, and allowed to raise: a dead connection surfacing here
+        # reaches the caller's reconnect path instead of being read as an empty
+        # mailbox, which is the other way this failure stays silent.
+        self._conn.noop()
         _, data = self._conn.search(None, "UNSEEN")
         uid_list: list[bytes] = data[0].split() if data[0] else []
         messages: list[dict[str, Any]] = []
