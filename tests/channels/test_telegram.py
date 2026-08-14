@@ -74,6 +74,9 @@ async def test_send_emits_valid_wire_payload(mock, pair_owner):
     assert "text" in body, "Telegram sendMessage requires text"
     assert body["text"] == "hi back"
     assert str(body["chat_id"]) == OWNER_ID
+    assert "parse_mode" not in body, (
+        "agent replies are plain text; MarkdownV2 rejects unescaped '!' and similar"
+    )
 
 
 @pytest.mark.asyncio
