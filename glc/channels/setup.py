@@ -11,11 +11,15 @@ always wins.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from glc import config
+
+logger = logging.getLogger("glc.channels.setup")
 
 CHANNEL_SPECS: dict[str, dict[str, Any]] = {
     # Guide-only cards intentionally have no saveable fields: these adapters
@@ -53,6 +57,40 @@ def _load() -> dict[str, Any]:
     return data if isinstance(data, dict) and isinstance(data.get("channels"), dict) else {"channels": {}}
 
 
+def _restrict_to_owner(path: Path) -> None:
+    """Make the secret file readable only by its owner, on every platform.
+
+    POSIX chmod expresses this directly. Windows does not: os.chmod there only
+    toggles the read-only attribute and silently ignores the rest, so it neither
+    restricts the file nor raises. An `except OSError` around it therefore never
+    fires on Windows and the file is left world-readable while the code believes
+    it succeeded. icacls is used instead, and if that cannot be applied the
+    caller is warned rather than left with a guarantee that does not hold.
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+    if os.name != "nt":
+        return
+
+    account = os.environ.get("USERNAME") or ""
+    if not account:
+        logger.warning("cannot restrict %s: USERNAME is not set", path)
+        return
+    try:
+        result = subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:F"],
+            capture_output=True, text=True, timeout=15, check=False)
+        if result.returncode != 0:
+            logger.warning("could not restrict %s to %s: %s", path, account,
+                           (result.stderr or result.stdout or "").strip()[:200])
+    except Exception as error:  # pragma: no cover - depends on the host
+        logger.warning("could not restrict %s to %s: %s: %s",
+                       path, account, type(error).__name__, error)
+
+
 def _save(data: dict[str, Any]) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,10 +98,7 @@ def _save(data: dict[str, Any]) -> None:
     temp.write_text(json.dumps(data, indent=2, sort_keys=True))
     os.chmod(temp, 0o600)
     temp.replace(path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:  # pragma: no cover - Windows
-        pass
+    _restrict_to_owner(path)
 
 
 def configured(name: str) -> dict[str, Any]:

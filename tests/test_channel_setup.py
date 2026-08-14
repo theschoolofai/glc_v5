@@ -2,10 +2,32 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _assert_owner_only(path) -> None:
+    """The credential file must be readable only by its owner, per platform.
+
+    POSIX expresses this in the mode bits. Windows does not: st_mode there is
+    always 0o666 for a writable file no matter how the ACL is set, so asserting
+    on mode bits fails even when the file is correctly restricted. The ACL is
+    the guarantee on Windows, so that is what gets checked.
+    """
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o077 == 0
+        return
+
+    listing = subprocess.run(["icacls", str(path)], capture_output=True,
+                             text=True, timeout=15, check=False).stdout
+    account = os.environ.get("USERNAME", "")
+    assert account and account.lower() in listing.lower(), listing
+    for unwanted in ("Everyone", "BUILTIN\\Users", "Authenticated Users"):
+        assert unwanted.lower() not in listing.lower(), (
+            f"{unwanted} still has access to the credential file:\n{listing}")
 
 
 def test_channels_page_and_safe_catalogue(app_client, install_token):
@@ -34,9 +56,10 @@ def test_secret_save_never_round_trips_and_requires_restart(app_client, install_
     )
     assert result.status_code == 200
     assert result.json()["restart_required"] is True
-    raw = (tmp_path / "cfg" / "channel_secrets.json").read_text()
+    secrets_file = tmp_path / "cfg" / "channel_secrets.json"
+    raw = secrets_file.read_text()
     assert "not-for-the-browser" in raw
-    assert (tmp_path / "cfg" / "channel_secrets.json").stat().st_mode & 0o077 == 0
+    _assert_owner_only(secrets_file)
 
     catalogue = app_client.get("/v1/channel-admin/catalogue", headers=_auth(install_token))
     assert "not-for-the-browser" not in catalogue.text
