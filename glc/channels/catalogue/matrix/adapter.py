@@ -135,17 +135,36 @@ class Adapter(ChannelAdapter):
     @staticmethod
     def _first_timeline_event(raw: Any) -> dict[str, Any] | None:
         """Pull the first ``m.room.message`` out of a ``/sync`` response.
-        Accepts either a full sync response or a bare event dict."""
+        Accepts either a full sync response or a bare event dict.
+
+        An ``m.room.encrypted`` event is reported rather than silently skipped.
+        This adapter has no Olm/Megolm support, and an access token alone can
+        never read an encrypted room, so in a room with encryption on -- which
+        is Element's default for direct messages -- every user message arrives
+        unreadable. Returning None without a word makes a fully configured
+        integration look like a dead one.
+        """
         if not isinstance(raw, dict):
             return None
         if raw.get("type") == "m.room.message":
             return raw
+        if raw.get("type") == "m.room.encrypted":
+            logger.warning(
+                "matrix: ignoring an encrypted event in room %s. This adapter has no "
+                "end-to-end encryption support, so encrypted rooms cannot be read. "
+                "Use a room created without encryption.", raw.get("room_id"))
+            return None
         joined = ((raw.get("rooms") or {}).get("join")) or {}
         for room_id, room in joined.items():
             for ev in (room.get("timeline") or {}).get("events", []):
                 if ev.get("type") == "m.room.message":
                     ev.setdefault("room_id", room_id)
                     return ev
+                if ev.get("type") == "m.room.encrypted":
+                    logger.warning(
+                        "matrix: ignoring an encrypted event in room %s. This adapter has "
+                        "no end-to-end encryption support, so encrypted rooms cannot be "
+                        "read. Use a room created without encryption.", room_id)
         return None
 
     def _extract_media(self, content: dict[str, Any], mock: Any) -> tuple[list[Attachment], str | None]:
