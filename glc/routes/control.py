@@ -14,6 +14,7 @@ import time
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from glc.channels import presence as channel_presence
 from glc.config import get_or_create_install_token
 from glc.security.pairing import CODE_TTL_SECONDS, get_pairing_store
 
@@ -82,7 +83,7 @@ async def presence(request: Request, authorization: str | None = Header(default=
     started = getattr(state, "started_at", time.time())
     pairings = get_pairing_store().all_pairings()
     return {
-        "channels": getattr(state, "registered_channels", []),
+        "channels": sorted(channel_presence.connected_channels()),
         "paired_users": [
             {
                 "channel": p.channel,
