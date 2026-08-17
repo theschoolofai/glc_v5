@@ -840,15 +840,10 @@ class GeminiProvider(BaseProvider):
             elif rf.get("type") == "json_object":
                 body["generationConfig"]["responseMimeType"] = "application/json"
 
-        reasoning_applied = False
-        if reasoning and reasoning != "off":
-            knob = _gemini_thinking_knob(m)
-            if knob == "level":
-                body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": reasoning}
-                reasoning_applied = True
-            elif knob == "budget":
-                body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": _GEMINI_BUDGETS[reasoning]}
-                reasoning_applied = True
+        thinking = _gemini_thinking_config(m, reasoning)
+        reasoning_applied = thinking is not None
+        if thinking is not None:
+            body["generationConfig"]["thinkingConfig"] = thinking
 
         url = f"{self.base_url}/models/{m}:generateContent?key={self.api_key}"
         async with httpx.AsyncClient(timeout=180) as c:
@@ -922,23 +917,69 @@ def _gemini_supports_thinking(model: str) -> bool:
 
 
 def _gemini_thinking_knob(model: str) -> str | None:
-    """Returns 'level' for thinkingLevel-capable models (2.5-pro, 3.x non-lite),
-    'budget' for thinkingBudget-only models (2.5-flash), or None for non-thinking."""
+    """Returns 'level' for thinkingLevel-capable models (2.5-pro and 3.x+ non-lite),
+    'budget' for thinkingBudget-only models (2.5-flash), or None for non-thinking.
+
+    Decided by version number, not by matching version strings. Matching the
+    literal "3-flash" and "3.1-flash" meant every later minor release --
+    gemini-3.5-flash, -3.6-flash, -3.7-flash -- fell through to None and was
+    treated as a model that does not think. It thinks anyway; the gateway just
+    stopped capping it, so a call could spend its whole output allowance in the
+    reasoning channel and return empty content.
+
+    An unrecognised future version is assumed to think. That direction fails
+    safe: `chat()` already retries with thinkingConfig stripped on a 400, so a
+    wrong guess costs one retry, while a missed thinking model costs a billed
+    non-answer.
+    """
     m = (model or "").lower()
     if "gemini" not in m:
         return None
     if "flash-lite" in m:
         return None
-    if "2.5-pro" in m or "3-pro" in m or "3.1-pro" in m:
+    version = re.search(r"gemini-(\d+)(?:\.(\d+))?", m)
+    if version is None:
+        return None
+    major, minor = int(version.group(1)), int(version.group(2) or 0)
+    if major >= 3:
         return "level"
-    if "3-flash" in m or "3.1-flash" in m:
-        return "level"  # 3.x flash (non-lite) supports thinkingLevel
-    if "2.5-flash" in m:
-        return "budget"
+    if (major, minor) == (2, 5):
+        return "level" if "pro" in m else "budget"
     return None
 
 
 _GEMINI_BUDGETS = {"low": 2048, "medium": 8192, "high": 24576}
+
+#: What "off" costs. `thinkingLevel: "off"` is rejected by the API as an invalid
+#: enum value; "minimal" is the level that actually reports 0 thought tokens.
+#: Measured on gemini-3.5-flash: unset 234, low 155, minimal 0, budget 0.
+_GEMINI_OFF_LEVEL = "minimal"
+
+
+def _gemini_thinking_config(model: str, reasoning: str | None) -> dict[str, Any] | None:
+    """The ``thinkingConfig`` for this model and dial setting, or None to omit it.
+
+    "off" has to be *said*. Omitting thinkingConfig does not stop a model that
+    thinks by default -- it leaves the reasoning channel uncapped, where it draws
+    on the same ``maxOutputTokens`` allowance as the answer. At the 1600-token
+    ceiling S17Code sends for planning, that returns truncated JSON or empty
+    content: a fully billed non-answer.
+
+    This is the lesson ``tiers.yaml`` already records for gpt-oss-120b, and which
+    :func:`_openai_compatible_body` already applies on the open-weight path with
+    ``chat_template_kwargs.thinking = False``. The Gemini path skipped it.
+    """
+    knob = _gemini_thinking_knob(model)
+    if knob is None:
+        return None
+    if reasoning == "off":
+        return {"thinkingLevel": _GEMINI_OFF_LEVEL} if knob == "level" else {"thinkingBudget": 0}
+    if not reasoning:
+        return None
+    if knob == "level":
+        return {"thinkingLevel": reasoning}
+    budget = _GEMINI_BUDGETS.get(reasoning)
+    return None if budget is None else {"thinkingBudget": budget}
 
 
 def _gemini_inline_refs(schema: dict) -> dict:
