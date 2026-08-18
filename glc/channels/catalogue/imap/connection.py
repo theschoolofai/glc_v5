@@ -94,7 +94,14 @@ class ImapConnection:
         """Return unseen messages as a list of {"uid": int, "raw": bytes}.
 
         In mock mode: returns mock.inbound_events as-is.
-        In live mode: SEARCH UNSEEN → FETCH (RFC822) for each UID.
+        In live mode: SEARCH UNSEEN → FETCH BODY.PEEK[] for each UID.
+
+        The fetch peeks deliberately. RFC 3501 defines the `RFC822` data item as
+        implicitly setting `\\Seen`, so fetching with it marked every message this
+        method read as read on the user's real mailbox — a visible side effect of
+        merely looking, and one that also made `mark_seen()` moot, since the flag
+        was already set before any caller could decide. `BODY.PEEK[]` returns the
+        same bytes and leaves flags alone.
         """
         if self.mock is not None:
             return list(self.mock.inbound_events)
@@ -105,7 +112,7 @@ class ImapConnection:
         messages: list[dict[str, Any]] = []
         for uid_bytes in uid_list:
             uid = int(uid_bytes)
-            _, msg_data = self._conn.fetch(str(uid), "(RFC822)")
+            _, msg_data = self._conn.fetch(str(uid), "(BODY.PEEK[])")
             for part in msg_data:
                 if isinstance(part, tuple):
                     messages.append({"uid": uid, "raw": part[1]})
