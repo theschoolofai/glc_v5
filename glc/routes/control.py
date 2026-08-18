@@ -7,6 +7,7 @@ The kill endpoint binds 127.0.0.1 only; the host check is enforced here.
 
 from __future__ import annotations
 
+import hmac
 import os
 import signal
 import time
@@ -25,7 +26,7 @@ def _require_token(authorization: str | None) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token (Authorization: Bearer <install_token>)")
     presented = authorization.removeprefix("Bearer ").strip()
-    if presented != expected:
+    if not hmac.compare_digest(presented, expected):
         raise HTTPException(403, "install token mismatch")
 
 

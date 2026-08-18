@@ -36,7 +36,8 @@ def test_secret_save_never_round_trips_and_requires_restart(app_client, install_
     assert result.json()["restart_required"] is True
     raw = (tmp_path / "cfg" / "channel_secrets.json").read_text()
     assert "not-for-the-browser" in raw
-    assert (tmp_path / "cfg" / "channel_secrets.json").stat().st_mode & 0o077 == 0
+    if os.name != "nt":
+        assert (tmp_path / "cfg" / "channel_secrets.json").stat().st_mode & 0o077 == 0
 
     catalogue = app_client.get("/v1/channel-admin/catalogue", headers=_auth(install_token))
     assert "not-for-the-browser" not in catalogue.text

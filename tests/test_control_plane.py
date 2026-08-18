@@ -65,3 +65,27 @@ def test_pair_bad_trust_level_400(app_client, install_token):
         json={"channel": "x", "channel_user_id": "1", "trust_level": "untrusted"},
     )
     assert r.status_code == 400
+
+
+def test_control_plane_uses_constant_time_hmac_comparison(monkeypatch, app_client, install_token):
+    """Ensure control plane token verification delegates to hmac.compare_digest for timing attack safety."""
+    import hmac
+
+    called = False
+    original_compare = hmac.compare_digest
+
+    def spy_compare(a, b):
+        nonlocal called
+        called = True
+        return original_compare(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy_compare)
+
+    h = {"Authorization": f"Bearer {install_token}"}
+    r = app_client.post(
+        "/v1/control/pair",
+        headers=h,
+        json={"channel": "telegram", "channel_user_id": "1"},
+    )
+    assert r.status_code == 200
+    assert called is True
