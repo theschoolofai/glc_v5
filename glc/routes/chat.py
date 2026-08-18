@@ -740,6 +740,8 @@ async def chat(req: ChatRequest, request: Request):
             admission = ctl.admit(
                 principal,
                 ctl.project(name, model_for_call, est_input, req.max_tokens, batch=bool(req.batch)),
+                provider=name,
+                model=model_for_call,
             )
             if not admission.allowed:
                 last_refusal = admission
@@ -751,6 +753,11 @@ async def chat(req: ChatRequest, request: Request):
                 candidates = [c for c in candidates if c != name]
                 continue
             budget_info = admission.as_dict()
+            # This call's hold, reserved by admit() above. Every meter.record()
+            # below that can be reached after this point resolves it — closes
+            # the hold and settles the real cost in one transaction — so it
+            # never sticks around as an open hold once the call is decided.
+            reservation_id = admission.reservation_id
 
             t0 = time.time()
             rtr.state[name].record(0)
@@ -815,6 +822,7 @@ async def chat(req: ChatRequest, request: Request):
                                 retries=retries,
                                 role=req.auto_route,
                                 tier=tier,
+                                reservation_id=reservation_id,
                             )
                             yield f"data: {json.dumps({'done': True, 'provider': name})}\n\n"
                         except Exception as e:
@@ -832,6 +840,7 @@ async def chat(req: ChatRequest, request: Request):
                                 retries=retries,
                                 role=req.auto_route,
                                 tier=tier,
+                                reservation_id=reservation_id,
                             )
                             yield f"data: {json.dumps({'error': str(e)[:300]})}\n\n"
 
@@ -939,6 +948,7 @@ async def chat(req: ChatRequest, request: Request):
                     role=req.auto_route,
                     tier=tier,
                     escalations=escalations,
+                    reservation_id=reservation_id,
                 )
                 span.set_usage(
                     input_tokens=usage.input_tokens,
@@ -1041,6 +1051,7 @@ async def chat(req: ChatRequest, request: Request):
                     retries=retries,
                     role=req.auto_route,
                     tier=tier,
+                    reservation_id=reservation_id,
                 )
                 tag = f"failed: {str(e)[:100]}"
                 if secs > 0:
@@ -1074,6 +1085,7 @@ async def chat(req: ChatRequest, request: Request):
                     retries=retries,
                     role=req.auto_route,
                     tier=tier,
+                    reservation_id=reservation_id,
                 )
                 all_attempts.append({"provider": name, "reason": f"exception: {str(e)[:120]}"})
                 if explicit_override:

@@ -170,18 +170,28 @@ class Meter:
         batch: bool = False,
         tokens_saved: int = 0,
         usd_saved: float = 0.0,
+        reservation_id: int | None = None,
         **ledger_fields,
     ) -> MeterRecord:
         """Price the call and append exactly one ledger row.
 
-        `ledger_fields` is forwarded verbatim to `db.log_call`, so every v3
-        field (latency_ms, status, error, attempted, router_decision, …) is
-        available without this signature having to enumerate them.
+        `ledger_fields` is forwarded verbatim to `db.log_call`/`db.settle_call`,
+        so every v3 field (latency_ms, status, error, attempted,
+        router_decision, …) is available without this signature having to
+        enumerate them.
+
+        `reservation_id`, when given, is the hold `BudgetController.admit()`
+        reserved for this call: the row is written as a settlement and the
+        hold is released, atomically, instead of just being inserted — so
+        the hold's worst-case figure stops counting once the real cost is
+        known, without ever overwriting it.
         """
         principal = principal or Principal()
         usage = usage or Usage()
         cost = self.price(provider, model, usage, batch=batch)
-        row_id = db.log_call(
+        write = db.settle_call if reservation_id is not None else db.log_call
+        write_kwargs = {"hold_id": reservation_id} if reservation_id is not None else {}
+        row_id = write(
             provider=provider,
             model=model or "",
             input_tokens=usage.input_tokens,
@@ -194,6 +204,7 @@ class Meter:
             usd_saved=usd_saved,
             **principal.as_dict(),
             **ledger_fields,
+            **write_kwargs,
         )
         return MeterRecord(
             row_id=row_id,
