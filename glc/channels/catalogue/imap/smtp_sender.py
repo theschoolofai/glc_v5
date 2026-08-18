@@ -23,12 +23,48 @@ All other SMTP errors are re-raised to the caller.
 from __future__ import annotations
 
 import logging
+import re
 import smtplib
+import socket
 import uuid
 from contextlib import contextmanager
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+#: A hostname smtplib may put in an EHLO: letters, digits, hyphens and dots.
+_EHLO_SAFE = re.compile(r"^[A-Za-z0-9.-]+$")
+
+
+def _ehlo_name() -> str:
+    """The name to announce in EHLO, guaranteed to be legal.
+
+    smtplib defaults to ``socket.getfqdn()``, which is not always a valid
+    hostname. On Windows it can come back with control characters embedded --
+    e.g. ``'LAPTOP-TGJ7B0SF.\\x08\\x08\\x04\\x04'`` -- and a server that
+    receives that rejects the EHLO with 501. Because the rejected EHLO is also
+    what advertises the server's extensions, the next call fails as
+    ``SMTPNotSupportedError: STARTTLS extension not supported by server``,
+    which points at the server rather than at the name we sent it.
+
+    A validated name with no domain suffix is handled the way smtplib's own
+    default (no ``local_hostname`` at all) already handles it: promoted to a
+    bracketed address literal (RFC 5321 4.1.3) rather than sent bare, so this
+    only adds a safety net for the corrupted case -- it never trades away
+    behaviour smtplib already got right for the merely-dotless one.
+    """
+    try:
+        candidate = socket.getfqdn().strip()
+    except Exception:  # noqa: BLE001 - name resolution must never break sending
+        candidate = ""
+    if candidate and _EHLO_SAFE.match(candidate):
+        if "." in candidate:
+            return candidate
+        try:
+            return f"[{socket.gethostbyname(socket.gethostname())}]"
+        except socket.gaierror:
+            return "[127.0.0.1]"
+    return "localhost"
 
 
 class SmtpSender:
@@ -60,7 +96,7 @@ class SmtpSender:
     @contextmanager
     def _session(self):
         """Open an SMTP session with EHLO → STARTTLS → AUTH, then close."""
-        smtp = smtplib.SMTP(self.host, self.port, timeout=30)
+        smtp = smtplib.SMTP(self.host, self.port, local_hostname=_ehlo_name(), timeout=30)
         try:
             smtp.ehlo()
             smtp.starttls()
