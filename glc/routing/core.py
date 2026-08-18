@@ -4,10 +4,21 @@ skip providers that lack a requested capability (tools/reasoning/structured/cach
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
 from collections import defaultdict, deque
 
-LIMITS = {
+log = logging.getLogger(__name__)
+
+# Free-tier ceilings, which is the right default: a key with no billing behind
+# it is the common case, and guessing high would turn every call into a 429.
+#
+# They are only defaults. A paid key is allowed considerably more, and a ceiling
+# that cannot be raised without editing this file throttles a caller who is
+# paying for more than it grants — silently, because being under your own
+# provider's limit looks identical to being fast enough.
+DEFAULT_LIMITS = {
     "ollama": {"rpm": 9999, "rpd": 9999999, "tpm": 99999999, "cooldown": 0, "max_ctx": 32000},
     "cerebras": {
         "rpm": 30,
@@ -23,6 +34,61 @@ LIMITS = {
     "openrouter": {"rpm": 20, "rpd": 50, "tpm": 99999999, "cooldown": 3, "max_ctx": 100000},
     "github": {"rpm": 10, "rpd": 50, "tpm": 99999999, "cooldown": 6, "max_ctx": 8000},
 }
+
+# `cooldown` is a delay in seconds and is meaningfully fractional; the rest are
+# counts. Parsing them all as int would floor a 0.5s cooldown to 0.
+_FRACTIONAL_FIELDS = frozenset({"cooldown"})
+
+
+def apply_env_overrides(limits: dict, environ: dict | None = None) -> dict:
+    """Raise (or lower) a provider ceiling from the environment, in place.
+
+    ``GLC_LIMIT_<PROVIDER>_<FIELD>``, for example ``GLC_LIMIT_GEMINI_RPM=150``.
+
+    Only providers and fields that already exist are touched. An unknown name is
+    ignored rather than created: inventing a provider here would hand the router
+    a candidate it cannot call, and inventing a field would add a ceiling nothing
+    enforces. A malformed or negative value leaves the default in place and logs,
+    because the failure mode of accepting it is a gateway that refuses every
+    request while looking correctly configured.
+    """
+    env = os.environ if environ is None else environ
+    for key, raw in env.items():
+        if not key.startswith("GLC_LIMIT_"):
+            continue
+        remainder = key[len("GLC_LIMIT_"):].lower()
+        # Provider and field names both contain underscores (gemini_1,
+        # tokens_per_day), so split on the longest provider that matches.
+        provider = next(
+            (name for name in sorted(limits, key=len, reverse=True)
+             if remainder.startswith(name + "_")),
+            None,
+        )
+        if provider is None:
+            log.warning("ignoring %s: no such provider", key)
+            continue
+        field = remainder[len(provider) + 1:]
+        if field not in limits[provider]:
+            log.warning("ignoring %s: %s has no %r ceiling", key, provider, field)
+            continue
+        text = (raw or "").strip()
+        if not text:
+            continue
+        try:
+            value = float(text) if field in _FRACTIONAL_FIELDS else int(text)
+        except ValueError:
+            log.warning("ignoring %s=%r: not a number", key, raw)
+            continue
+        if value < 0:
+            log.warning("ignoring %s=%r: a ceiling cannot be negative", key, raw)
+            continue
+        limits[provider][field] = value
+    return limits
+
+
+LIMITS = apply_env_overrides(
+    {name: dict(values) for name, values in DEFAULT_LIMITS.items()}
+)
 
 # One Google AI Studio key is one independently-metered provider.  The graph
 # scheduler requests the logical name ``gemini``; this router owns expansion,
