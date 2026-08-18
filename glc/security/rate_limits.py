@@ -36,7 +36,9 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def configure_from_yaml(self, channels_yaml: dict) -> None:
-        defaults = (channels_yaml or {}).get("defaults", {}).get("rate_limits", {})
+        # `or {}` rather than a .get default: a declared-but-empty `defaults:`
+        # block parses to None, so the key is present and .get never fires.
+        defaults = ((channels_yaml or {}).get("defaults") or {}).get("rate_limits") or {}
         self.default_mpm = int(defaults.get("messages_per_minute", self.default_mpm))
         self.default_tpm = int(defaults.get("tool_calls_per_minute", self.default_tpm))
         for ch, cfg in ((channels_yaml or {}).get("channels", {}) or {}).items():

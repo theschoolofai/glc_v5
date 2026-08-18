@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+import yaml
+
 from glc.security.rate_limits import RateLimiter
 
 
@@ -64,3 +66,31 @@ def test_tool_calls_separate_from_messages():
     assert r.check_message("x", "1")[0]
     # Tool call quota is its own bucket.
     assert r.check_tool_call("x", "1")[0]
+
+
+# --- half-empty channels.yaml -------------------------------------------------
+#
+# config.load_channels() guards the *fully* empty file (`or {"channels": {}}`).
+# It cannot guard a file that has the key and no value: `defaults:` with nothing
+# under it parses to None, the key is present, and `.get("defaults", {})` hands
+# back that None. get_rate_limiter() runs this lazily on the first inbound
+# channel message, so the whole gateway stops accepting messages.
+
+
+def test_a_declared_but_empty_defaults_block_is_not_a_crash():
+    r = RateLimiter(default_mpm=5, default_tpm=4)
+    r.configure_from_yaml(yaml.safe_load("defaults:\nchannels:\n  webui:\n    enabled: true\n"))
+    assert r.limits_for("webui") == (5, 4)
+
+
+def test_a_declared_but_empty_rate_limits_block_is_not_a_crash():
+    r = RateLimiter(default_mpm=5, default_tpm=4)
+    r.configure_from_yaml(yaml.safe_load("defaults:\n  rate_limits:\n"))
+    assert r.limits_for("webui") == (5, 4)
+
+
+def test_a_partial_defaults_block_keeps_the_other_default():
+    """One key present must not reset the one that is absent."""
+    r = RateLimiter(default_mpm=5, default_tpm=4)
+    r.configure_from_yaml(yaml.safe_load("defaults:\n  rate_limits:\n    messages_per_minute: 9\n"))
+    assert r.limits_for("webui") == (9, 4)
