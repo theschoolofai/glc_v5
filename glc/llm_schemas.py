@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolDef(BaseModel):
@@ -36,6 +36,52 @@ class ResponseFormat(BaseModel):
     strict: bool = True
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_openai_nesting(cls, data: Any) -> Any:
+        """Take OpenAI's nested spelling as well as this gateway's flat one.
+
+        OpenAI documents the schema one level down::
+
+            {"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}
+
+        Extra fields were ignored rather than rejected, so that request parsed
+        cleanly with `schema_` left as None — and a request with no schema is
+        dropped silently at every subsequent step. Porting a call over from
+        OpenAI is the most likely way anyone reaches that state.
+        """
+        if not isinstance(data, dict):
+            return data
+        nested = data.get("json_schema")
+        if not isinstance(nested, dict):
+            return data
+        merged = {k: v for k, v in data.items() if k != "json_schema"}
+        for outer, inner in (("schema", "schema"), ("name", "name"), ("strict", "strict")):
+            if merged.get(outer) is None and inner in nested:
+                merged[outer] = nested[inner]
+        return merged
+
+    @model_validator(mode="after")
+    def _json_schema_needs_a_schema(self) -> "ResponseFormat":
+        """Refuse the contradiction rather than quietly serving prose.
+
+        `type="json_schema"` with nothing to validate against is dropped in
+        three places at once: the provider is sent no `response_format`, the
+        reply is never checked, and only `_required_caps` still behaves as if
+        structured output were happening — so the call is routed to a
+        structured-capable provider and returns 200 with prose in it. The caller
+        discovers the problem when their own json.loads fails, a long way from
+        here.
+        """
+        if self.type == "json_schema" and not self.schema_:
+            raise ValueError(
+                "response_format type 'json_schema' requires a 'schema'. "
+                "Pass it flat as {'type':'json_schema','schema':{...}}, or "
+                "nested as OpenAI does. For unconstrained JSON use "
+                "{'type':'json_object'}."
+            )
+        return self
 
 
 class ChatRequest(BaseModel):
