@@ -22,10 +22,13 @@ router = APIRouter()
 
 def _require_token(authorization: str | None) -> None:
     expected = get_or_create_install_token()
+    if not expected:
+        raise HTTPException(503, "install token is not configured; control plane refuses to serve")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token (Authorization: Bearer <install_token>)")
     presented = authorization.removeprefix("Bearer ").strip()
-    if presented != expected:
+    # Fail closed: empty presented must not match an empty expected secret.
+    if not presented or presented != expected:
         raise HTTPException(403, "install token mismatch")
 
 

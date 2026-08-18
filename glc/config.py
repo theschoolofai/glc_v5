@@ -93,11 +93,18 @@ def install_token_path() -> Path:
 
 def get_or_create_install_token() -> str:
     """Per-installation token used to authenticate WS adapter connections
-    and /v1/control/* requests. Generated once and persisted to disk."""
+    and /v1/control/* requests. Generated once and persisted to disk.
+
+    An empty or whitespace-only file is treated as missing: auth callers compare
+    with ``==`` / ``!=``, so an empty expected token would fail open.
+    """
+    import secrets
+
     p = install_token_path()
     if p.exists():
-        return p.read_text().strip()
-    import secrets
+        existing = p.read_text().strip()
+        if existing:
+            return existing
 
     tok = secrets.token_urlsafe(32)
     p.write_text(tok)
