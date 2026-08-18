@@ -58,12 +58,12 @@ def _save(data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(data, indent=2, sort_keys=True))
-    os.chmod(temp, 0o600)
+    config.restrict_to_owner(temp)
     temp.replace(path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:  # pragma: no cover - Windows
-        pass
+    # Restrict again after the replace: on Windows the destination keeps the
+    # source's ACL, but an explicit pass costs nothing and survives a future
+    # change to how the file is written.
+    config.restrict_to_owner(path)
 
 
 def configured(name: str) -> dict[str, Any]:
