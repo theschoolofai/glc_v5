@@ -13,9 +13,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+
+load_dotenv(Path(__file__).resolve().parents[4] / ".env")
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 DIR = Path(__file__).parent
@@ -84,8 +88,6 @@ def authenticate() -> Credentials:
 
 def setup_watch(creds: Credentials, topic: str) -> dict:
     """Call gmail.users.watch() to start Pub/Sub push notifications."""
-    from googleapiclient.discovery import build
-
     service = build("gmail", "v1", credentials=creds)
     result = (
         service.users()
@@ -105,7 +107,13 @@ def setup_watch(creds: Credentials, topic: str) -> dict:
 if __name__ == "__main__":
     creds = authenticate()
 
-    topic_name = os.getenv("GMAIL_PUBSUB_TOPIC", DEFAULT_PUBSUB_TOPIC)
+    topic_name = os.getenv("GMAIL_PUBSUB_TOPIC", "").strip() or DEFAULT_PUBSUB_TOPIC
     print(f"\nSetting up Gmail watch on topic: {topic_name}")
-    setup_watch(creds, topic_name)
-    print("\nDone! Gmail will now push notifications to your Pub/Sub topic.")
+    try:
+        setup_watch(creds, topic_name)
+        print("\nDone! Gmail will now push notifications to your Pub/Sub topic.")
+    except Exception as error:
+        print(
+            f"\nWatch not registered ({type(error).__name__}: {error}). "
+            "token.json is enough for outbound send; inbound push still needs a working Pub/Sub topic."
+        )

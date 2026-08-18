@@ -126,6 +126,27 @@ def test_proactive_send_is_registry_driven_and_authenticated(app_client, monkeyp
     assert sent[0].channel_user_id == "!room:example.org"
 
 
+def test_proactive_send_accepts_s17_bridge_token_name(app_client, monkeypatch):
+    sent = []
+
+    class Adapter:
+        async def send(self, reply):
+            sent.append(reply)
+            return {"provider_message_id": "msg-17"}
+
+    monkeypatch.delenv("GLC_S16_BRIDGE_TOKEN", raising=False)
+    monkeypatch.setenv("GLC_S17_BRIDGE_TOKEN", "shared")
+    monkeypatch.setattr(registry, "instantiate", lambda name: Adapter() if name == "matrix" else None)
+    response = app_client.post(
+        "/v1/channels/matrix/send",
+        headers={"Authorization": "Bearer shared"},
+        json={"channel": "matrix", "channel_user_id": "!room:example.org", "text": "Build passed"},
+    )
+    assert response.status_code == 200
+    assert response.json()["adapter_result"]["provider_message_id"] == "msg-17"
+    assert sent[0].channel_user_id == "!room:example.org"
+
+
 def test_proactive_send_rejects_missing_authority(app_client):
     response = app_client.post(
         "/v1/channels/telegram/send",

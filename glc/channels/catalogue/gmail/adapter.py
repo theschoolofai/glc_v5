@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from email import policy as email_policy
 from email.message import EmailMessage
 from email.parser import BytesParser
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from glc.channels.base import ChannelAdapter
@@ -37,6 +38,13 @@ from glc.security.pairing import get_pairing_store
 from glc.security.trust_level import TrustLevel, classify
 
 logger = logging.getLogger(__name__)
+
+GMAIL_AUTH_SETUP = "python -m glc.channels.catalogue.gmail.auth_setup"
+
+
+def _token_path() -> Path:
+    override = os.getenv("GMAIL_TOKEN_PATH", "").strip()
+    return Path(override) if override else Path(__file__).parent / "token.json"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -79,13 +87,22 @@ class Adapter(ChannelAdapter):
         if self._client is not None:
             return self._client
 
-        from pathlib import Path
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+        except ModuleNotFoundError as error:
+            raise RuntimeError(
+                "Gmail send needs google-auth, google-auth-oauthlib, and "
+                "google-api-python-client (declared in glc_v5 pyproject.toml)."
+            ) from error
 
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
+        token_path = _token_path()
+        if not token_path.is_file():
+            raise RuntimeError(
+                f"Gmail token.json is missing. Run {GMAIL_AUTH_SETUP}"
+            )
 
-        token_path = Path(__file__).parent / "token.json"
         scopes = ["https://www.googleapis.com/auth/gmail.modify"]
 
         client_id = os.getenv("GMAIL_OAUTH_CLIENT_ID")

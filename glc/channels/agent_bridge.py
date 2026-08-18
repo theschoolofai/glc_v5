@@ -19,6 +19,23 @@ class AgentBridgeError(RuntimeError):
     """S16 could not accept or answer a channel message."""
 
 
+def configured_bridge_tokens() -> frozenset[str]:
+    """Both env names are valid; S17 is the current name, S16 is the legacy alias."""
+    return frozenset(
+        token
+        for token in (
+            os.getenv("GLC_S17_BRIDGE_TOKEN", "").strip(),
+            os.getenv("GLC_S16_BRIDGE_TOKEN", "").strip(),
+        )
+        if token
+    )
+
+
+def configured_bridge_token() -> str:
+    """Token GLC presents when calling S17. Prefer the current env name."""
+    return os.getenv("GLC_S17_BRIDGE_TOKEN", "").strip() or os.getenv("GLC_S16_BRIDGE_TOKEN", "").strip()
+
+
 class S16AgentBridge:
     def __init__(
         self,
@@ -27,9 +44,14 @@ class S16AgentBridge:
         token: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self.base_url = (base_url or os.getenv("S16_BASE_URL", "http://127.0.0.1:8113")).rstrip("/")
-        self.token = token if token is not None else os.getenv("GLC_S16_BRIDGE_TOKEN", "")
-        self._client = client or httpx.AsyncClient(timeout=float(os.getenv("GLC_S16_TIMEOUT", "180")))
+        self.base_url = (
+            base_url
+            or os.getenv("S17_BASE_URL", "").strip()
+            or os.getenv("S16_BASE_URL", "http://127.0.0.1:8113")
+        ).rstrip("/")
+        self.token = token if token is not None else configured_bridge_token()
+        timeout = os.getenv("GLC_S17_TIMEOUT") or os.getenv("GLC_S16_TIMEOUT") or "180"
+        self._client = client or httpx.AsyncClient(timeout=float(timeout))
         self._owns_client = client is None
 
     async def handle(self, message: ChannelMessage) -> ChannelReply:
