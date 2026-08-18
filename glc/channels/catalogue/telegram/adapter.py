@@ -6,6 +6,7 @@ Group G16: Implement on_message and send against the mock-API fake and real Tele
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,98 @@ from glc.security.pairing import get_pairing_store
 from glc.security.trust_level import classify
 
 from .schemas import TelegramUpdate
+
+# Telegram rejects any MarkdownV2 message containing an unescaped reserved
+# character. A full stop is reserved, so an ordinary English sentence fails to
+# send. The envelope carries plain prose with no formatting contract, so the
+# text is escaped rather than interpreted.
+# https://core.telegram.org/bots/api#markdownv2-style
+_MARKDOWN_V2_RESERVED = set("_*[]()~`>#+-=|{}.!\\")
+
+
+def escape_markdown_v2(text: str) -> str:
+    """Escape every MarkdownV2 reserved character in plain prose."""
+    return "".join("\\" + char if char in _MARKDOWN_V2_RESERVED else char for char in text)
+
+
+# Agent replies arrive as ordinary markdown: **bold**, ### headings, * bullets.
+# Telegram's MarkdownV2 is a different dialect, so escaping alone delivers the
+# message but shows the syntax literally. These convert the common constructs
+# into MarkdownV2 before escaping the rest.
+_FENCE_RE = re.compile(r"```(\w*)\n(.*?)```", re.S)
+_CODE_RE = re.compile(r"`([^`\n]+)`")
+# Deliberately NOT re.S. A model routinely emits an unbalanced ** at the start
+# of a heading line; allowing bold to span newlines lets that stray marker pair
+# with one several lines later, bolding the whole block and leaving a literal
+# ** behind. Bold is confined to a single line.
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.M)
+_BULLET_RE = re.compile(r"^(\s*)[*+-]\s+", re.M)
+# [label](url). A file:// target is not a link Telegram can open, and rendering
+# it exposes a local filesystem path, so those collapse to their label.
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((\S+?)\)")
+_PLACEHOLDER = "\x00"
+
+
+def markdown_to_telegram(text: str) -> str:
+    """Render common markdown as Telegram MarkdownV2, escaping everything else.
+
+    Escaping alone is enough to deliver a message, which is the bug this
+    adapter had. It is not enough to read well: an agent answer full of
+    ``**bold**`` and ``###`` arrives with the syntax visible. Bold and code are
+    translated into the MarkdownV2 spelling, headings become bold, and bullets
+    are normalised, before the remaining reserved characters are escaped.
+    """
+    if not text:
+        return ""
+
+    kept: list[tuple[str, str]] = []
+
+    def stash(opener: str, body: str, closer: str) -> str:
+        kept.append((opener, body, closer))
+        return f"{_PLACEHOLDER}{len(kept) - 1}{_PLACEHOLDER}"
+
+    # Code must survive untouched apart from the two characters Telegram
+    # requires escaping even inside a code span.
+    def keep_fence(match: re.Match[str]) -> str:
+        body = match.group(2).replace("\\", "\\\\").replace("`", "\\`")
+        return stash("```\n", body, "```")
+
+    def keep_code(match: re.Match[str]) -> str:
+        body = match.group(1).replace("\\", "\\\\").replace("`", "\\`")
+        return stash("`", body, "`")
+
+    text = _FENCE_RE.sub(keep_fence, text)
+    text = _CODE_RE.sub(keep_code, text)
+
+    text = _HEADING_RE.sub(lambda m: f"**{m.group(1)}**", text)
+    text = _BULLET_RE.sub(lambda m: f"{m.group(1)}- ", text)
+    def keep_link(match: re.Match[str]) -> str:
+        label, url = match.group(1), match.group(2)
+        if not url.startswith(("http://", "https://")):
+            # Not something Telegram can open, and a file:// target would put a
+            # local filesystem path in the chat. Keep the label only.
+            return label
+        # Inside a MarkdownV2 link target only ) and \ are special.
+        safe = url.replace("\\", "\\\\").replace(")", "\\)")
+        return stash("[", f"{escape_markdown_v2(label)}]({safe}", ")")
+
+    text = _LINK_RE.sub(keep_link, text)
+
+    def keep_bold(match: re.Match[str]) -> str:
+        return stash("*", escape_markdown_v2(match.group(1)), "*")
+
+    text = _BOLD_RE.sub(keep_bold, text)
+    # Anything still spelled ** is an unmatched marker the model emitted. It
+    # carries no meaning, so drop it rather than escaping it into view.
+    text = text.replace("**", "")
+    text = escape_markdown_v2(text)
+
+    # Escaping mangled the placeholders, so match them loosely on restore.
+    for index, (opener, body, closer) in enumerate(kept):
+        marker = re.compile(re.escape(_PLACEHOLDER) + r"\\?" + str(index) + re.escape(_PLACEHOLDER))
+        text = marker.sub(lambda _m, o=opener, b=body, c=closer: f"{o}{b}{c}", text, count=1)
+    return text
 
 
 class Adapter(ChannelAdapter):
@@ -151,7 +244,7 @@ class Adapter(ChannelAdapter):
             "chat_id": int(reply.channel_user_id)
             if reply.channel_user_id.isdigit()
             else reply.channel_user_id,
-            "text": reply.text or "",
+            "text": markdown_to_telegram(reply.text or ""),
             "parse_mode": "MarkdownV2",
         }
 

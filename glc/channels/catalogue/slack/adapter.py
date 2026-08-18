@@ -26,6 +26,13 @@ from glc.security.trust_level import classify
 class Adapter(ChannelAdapter):
     name = "slack"
 
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        super().__init__(config)
+        # sender id -> the conversation they last spoke in. ChannelReply carries
+        # no metadata, so this is the only place the inbound conversation can be
+        # kept for the outbound leg.
+        self._conversations: dict[str, str] = {}
+
     async def on_message(self, raw: Any) -> ChannelMessage | None:
         """Parse a Slack Events API payload into a ChannelMessage.
 
@@ -71,6 +78,9 @@ class Adapter(ChannelAdapter):
         if is_public and trust_level == "untrusted":
             return None
 
+        if user_id and channel_id:
+            self._conversations[user_id] = channel_id
+
         return ChannelMessage(
             channel="slack",
             channel_user_id=user_id,
@@ -103,6 +113,15 @@ class Adapter(ChannelAdapter):
             events = getattr(mock, "inbound_events", [])
             if events:
                 channel_id = events[-1].get("event", {}).get("channel", "C01CHAN")
+        else:
+            # Production. ChannelReply has no metadata field, so the
+            # slack_channel_id recorded on the way in cannot travel back out.
+            # Without this the placeholder above would leak into a real
+            # chat.postMessage call and every reply would fail with
+            # channel_not_found. Remember the conversation per sender instead.
+            remembered = self._conversations.get(reply.channel_user_id)
+            if remembered:
+                channel_id = remembered
 
         body: dict[str, Any] = {
             "channel": channel_id,

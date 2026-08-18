@@ -8,7 +8,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from glc.security.redaction import redact_local_paths
 
 TrustLevel = Literal["owner_paired", "user_paired", "untrusted"]
 
@@ -50,3 +52,16 @@ class ChannelReply(BaseModel):
     thread_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("text", mode="after")
+    @classmethod
+    def _strip_host_paths(cls, value: str | None) -> str | None:
+        """No reply leaves this process carrying a host filesystem path.
+
+        Here rather than in an adapter because every outbound route converges on
+        this type: the agent bridge validates one, and the proactive
+        ``POST /v1/channels/{name}/send`` endpoint that carries approval
+        questions parses one from its request body. An adapter-level guard would
+        have to be written fourteen times and would still miss the fifteenth.
+        """
+        return redact_local_paths(value)

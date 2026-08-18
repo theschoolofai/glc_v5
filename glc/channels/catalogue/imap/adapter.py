@@ -35,6 +35,7 @@ Outbound pipeline  send(reply) → dict
 from __future__ import annotations
 
 import hashlib
+import os
 import smtplib
 import uuid
 from datetime import datetime
@@ -243,11 +244,37 @@ class Adapter(ChannelAdapter):
                     return {**result, "status": 429}
             return result
 
+        # Config first, environment second. A caller that constructs this
+        # adapter itself, such as a bridge, passes credentials explicitly and
+        # keeps that behaviour unchanged.
+        #
+        # The fallback exists because the proactive send route builds an adapter
+        # with `registry.instantiate(name)` and no config at all, so on that
+        # path every setting below was the empty-string default and the send
+        # failed with no host to connect to. Inbound worked, and replies over
+        # the bridge worked, so the channel looked healthy while the one path an
+        # autonomous run uses was dead.
+        #
+        # This mirrors what the Telegram adapter already does with
+        # TELEGRAM_BOT_TOKEN, so the two channels resolve credentials the same
+        # way rather than each inventing its own rule.
+        def setting(key: str, *env: str, default: str = "") -> str:
+            value = self.config.get(key)
+            if value:
+                return str(value)
+            for name in env:
+                found = os.getenv(name, "").strip()
+                if found:
+                    return found
+            return default
+
         sender = SmtpSender(
-            host=self.config.get("smtp_host", ""),
-            port=int(self.config.get("smtp_port", 587)),
-            user=self.config.get("smtp_user", ""),
-            password=self.config.get("smtp_password", ""),
+            host=setting("smtp_host", "SMTP_HOST"),
+            # The mailbox this bot reads is the mailbox it sends as, so IMAP_*
+            # is the sensible second choice: one account, configured once.
+            port=int(setting("smtp_port", "SMTP_PORT", default="587")),
+            user=setting("smtp_user", "SMTP_USER", "IMAP_USER"),
+            password=setting("smtp_password", "SMTP_PASSWORD", "IMAP_PASSWORD"),
             bot_from=bot_from,
         )
         return sender.send(to=reply.channel_user_id, raw_bytes=out.as_bytes())
