@@ -76,6 +76,34 @@ def test_only_meta_get_verification_is_exposed(app_client):
     assert app_client.get("/v1/channels/whatsapp/webhook").status_code == 403
 
 
+def test_meta_verify_rejects_unconfigured_token(app_client, monkeypatch):
+    monkeypatch.delenv("WHATSAPP_VERIFY_TOKEN", raising=False)
+    r = app_client.get(
+        "/v1/channels/whatsapp/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "echo-me"},
+    )
+    assert r.status_code == 403
+    assert r.text != "echo-me"
+
+
+def test_meta_verify_accepts_configured_token(app_client, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "configured-hub-secret")
+    ok = app_client.get(
+        "/v1/channels/whatsapp/webhook",
+        params={
+            "hub.mode": "subscribe",
+            "hub.verify_token": "configured-hub-secret",
+            "hub.challenge": "echo-me",
+        },
+    )
+    assert ok.status_code == 200 and ok.text == "echo-me"
+    bad = app_client.get(
+        "/v1/channels/whatsapp/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "wrong", "hub.challenge": "echo-me"},
+    )
+    assert bad.status_code == 403
+
+
 def test_rejects_unknown_channel_and_unknown_setting(app_client, install_token):
     missing = app_client.put("/v1/channel-admin/not-real", headers=_auth(install_token), json={"enabled": True})
     assert missing.status_code == 404

@@ -230,7 +230,11 @@ async def channel_webhook_verify(name: str, request: Request):
     token = params.get("hub.verify_token", "")
     challenge = params.get("hub.challenge", "")
     expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "")
-    if mode == "subscribe" and hmac.compare_digest(token, expected):
+    # Empty secrets compare equal. An unset WHATSAPP_VERIFY_TOKEN must not
+    # match an empty hub.verify_token (hmac.compare_digest("", "") is True).
+    if not expected or not token or mode != "subscribe":
+        raise HTTPException(status_code=403)
+    if hmac.compare_digest(token, expected):
         return PlainTextResponse(challenge)
     raise HTTPException(status_code=403)
 
