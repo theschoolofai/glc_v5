@@ -14,7 +14,7 @@ import httpx
 from glc.channels.base import ChannelAdapter
 from glc.channels.envelope import Attachment, ChannelMessage, ChannelReply
 from glc.security.allowlists import allowed
-from glc.security.pairing import get_pairing_store
+from glc.security.pairing import get_pairing_store, unpaired_outbound
 from glc.security.trust_level import classify
 
 from .schemas import TelegramUpdate
@@ -146,6 +146,9 @@ class Adapter(ChannelAdapter):
         )
 
     async def send(self, reply: ChannelReply) -> Any:
+        blocked = unpaired_outbound(self.name, reply.channel_user_id)
+        if blocked is not None:
+            return blocked
         # Build sendMessage payload
         payload = {
             "chat_id": int(reply.channel_user_id)

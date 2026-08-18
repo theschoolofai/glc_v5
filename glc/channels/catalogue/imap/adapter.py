@@ -47,6 +47,7 @@ from glc.channels.catalogue.imap.mime_parser import parse as _mime_parse
 from glc.channels.catalogue.imap.smtp_sender import SmtpSender
 from glc.channels.catalogue.imap.uid_tracker import UidTracker
 from glc.channels.envelope import Attachment, ChannelMessage, ChannelReply
+from glc.security.pairing import unpaired_outbound
 from glc.security.trust_level import classify
 
 _BOT_FROM = "bot@example.com"
@@ -216,6 +217,9 @@ class Adapter(ChannelAdapter):
 
         SMTP 421 (service unavailable) is normalised to {"status": 429}.
         """
+        blocked = unpaired_outbound(self.name, reply.channel_user_id)
+        if blocked is not None:
+            return blocked
         out = self._format_reply(reply)
         bot_from = self.config.get("bot_from", _BOT_FROM)
 

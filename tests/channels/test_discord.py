@@ -72,6 +72,14 @@ async def test_send_emits_valid_wire_payload(mock, pair_owner):
 
 
 @pytest.mark.asyncio
+async def test_send_to_unpaired_recipient_is_blocked(mock):
+    adapter = Adapter(config={"mock": mock})
+    result = await adapter.send(ChannelReply(channel="discord", channel_user_id=STRANGER_ID, text="hi"))
+    assert result == {"error": "recipient not paired", "code": "outbound_blocked"}
+    assert mock.send_log == []
+
+
+@pytest.mark.asyncio
 async def test_disconnect_is_handled(mock, pair_owner):
     adapter = Adapter(config={"mock": mock})
     mock.force_disconnect()
