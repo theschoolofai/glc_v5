@@ -996,6 +996,7 @@ async def chat(req: ChatRequest, request: Request):
                     latency_ms=latency,
                     tool_call_dialect=result["tool_call_dialect"],
                     reasoning_applied=result["reasoning_applied"],
+                    reasoning_text=result.get("reasoning_text"),
                     parsed=parsed,
                     attempted=all_attempts,
                     router_decision=router_decision,

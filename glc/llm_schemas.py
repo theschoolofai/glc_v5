@@ -170,6 +170,12 @@ class ChatResponse(BaseModel):
     latency_ms: int = 0
     tool_call_dialect: Literal["native", "prompted_fallback", "none"] = "none"
     reasoning_applied: bool = False
+    # New in V9: a provider's own reasoning channel, when it separates one out
+    # (Ollama's message.thinking, an OpenAI-compat message.reasoning). These
+    # tokens are generated and billed regardless of whether anyone reads this
+    # field; capturing them costs nothing further. None when the provider did
+    # not return one, or did not think.
+    reasoning_text: str | None = None
     parsed: dict[str, Any] | None = None  # set when response_format used
     attempted: list[dict[str, Any]] = Field(default_factory=list)
     # New in V3: present only when auto_route was used
