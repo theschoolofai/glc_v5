@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from glc.audit import append as audit_append
 from glc.channels import registry
-from glc.channels.agent_bridge import AgentBridgeError
+from glc.channels.agent_bridge import AgentBridgeError, configured_bridge_tokens
 from glc.channels.envelope import ChannelMessage, ChannelReply
 from glc.channels.setup import CHANNEL_SPECS, public_catalogue, update
 from glc.config import get_or_create_install_token
@@ -50,11 +50,15 @@ def _bridge(state):
 
 def _authorised_channel_control(authorization: str | None) -> bool:
     presented = (authorization or "").removeprefix("Bearer ").strip()
-    candidates = {get_or_create_install_token()}
-    bridge_token = os.getenv("GLC_S16_BRIDGE_TOKEN", "").strip()
-    if bridge_token:
-        candidates.add(bridge_token)
-    return bool(presented) and any(hmac.compare_digest(presented, expected) for expected in candidates)
+    if not presented:
+        return False
+    candidates = {get_or_create_install_token(), *configured_bridge_tokens()}
+    return any(
+        bool(expected)
+        and len(presented) == len(expected)
+        and hmac.compare_digest(presented, expected)
+        for expected in candidates
+    )
 
 
 def _verified_identity(message: ChannelMessage, pairings) -> ChannelMessage:

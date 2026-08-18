@@ -84,12 +84,12 @@ local `.env` files:
 
 ```dotenv
 # glc_v5/.env
-S16_BASE_URL=http://127.0.0.1:8113
-GLC_S16_BRIDGE_TOKEN=replace-with-a-long-random-local-token
+S17_BASE_URL=http://127.0.0.1:8113
+GLC_S17_BRIDGE_TOKEN=replace-with-a-long-random-local-token
 
-# S16Code/.env
+# S17Code/.env
 GLC_BASE_URL=http://127.0.0.1:8111
-S16_CHANNEL_BRIDGE_TOKEN=replace-with-a-long-random-local-token
+S17_CHANNEL_BRIDGE_TOKEN=replace-with-a-long-random-local-token
 ```
 
 `GET /v1/channels` is the live catalogue. There is no second list of Telegram,
