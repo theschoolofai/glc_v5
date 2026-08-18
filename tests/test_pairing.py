@@ -71,3 +71,37 @@ def test_code_collision_replaces_pending():
     # the user shouldn't have to remember which old code is live).
     if code1 != code2:
         assert store.confirm_code(code2) is not None
+
+
+# ------------------------------------------------ email identities are case-insensitive
+
+def test_owner_pairing_survives_a_different_case_on_a_later_message():
+    """gmail/imap adapters extract the bare address straight off the From:
+    header with no lowercasing (see gmail/adapter.py:_extract_email,
+    imap/mime_parser.py:_strip_display_name), and real mail clients/MTAs are
+    not consistent about local-part case even for the same real inbox. An
+    owner paired as "Owner@Gmail.com" must still classify as owner_paired
+    when a later message arrives as "owner@gmail.com" — RFC 5321 permits
+    case-sensitive local parts in theory, but no real provider (Gmail
+    included) treats them that way, and a pairing store that does is a
+    trust boundary that silently drops a real owner to untrusted."""
+    store = PairingStore()
+    store.force_pair_owner("gmail", "Owner@Gmail.com", "owner")
+    assert store.lookup("gmail", "owner@gmail.com") is not None
+    assert store.lookup("gmail", "OWNER@GMAIL.COM") is not None
+    assert store.lookup("gmail", "owner@gmail.com").trust_level == "owner_paired"
+
+
+def test_pairing_code_flow_is_also_case_insensitive():
+    store = PairingStore()
+    code, _ = store.issue_code("imap", "User.Name@Example.com", "them",
+                               requested_trust_level="user_paired")
+    store.confirm_code(code)
+    assert store.lookup("imap", "user.name@example.com") is not None
+
+
+def test_revoke_is_case_insensitive_too():
+    store = PairingStore()
+    store.force_pair_owner("gmail", "Owner@Gmail.com")
+    assert store.revoke("gmail", "owner@gmail.com") is True
+    assert store.lookup("gmail", "Owner@Gmail.com") is None
