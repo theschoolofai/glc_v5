@@ -19,6 +19,26 @@ from glc.security.trust_level import classify
 
 from .schemas import TelegramUpdate
 
+# Telegram's documented MarkdownV2 reserved set. Any of these arriving unescaped
+# makes the whole sendMessage call fail with 400 "can't parse entities".
+_MARKDOWN_V2_RESERVED = frozenset(r"_*[]()~`>#+-=|{}.!")
+
+
+def _escape_markdown_v2(text: str) -> str:
+    """Escape every character MarkdownV2 reserves.
+
+    Agent replies are arbitrary prose, not hand-authored markup, so almost all of
+    them contain '.' or '-'. Declaring parse_mode MarkdownV2 while passing that
+    text through untouched makes Telegram reject the message outright. The
+    backslash is escaped in the same pass so it cannot escape the escape.
+    """
+    out: list[str] = []
+    for char in text:
+        if char == "\\" or char in _MARKDOWN_V2_RESERVED:
+            out.append("\\")
+        out.append(char)
+    return "".join(out)
+
 
 class Adapter(ChannelAdapter):
     name = "telegram"
@@ -151,7 +171,7 @@ class Adapter(ChannelAdapter):
             "chat_id": int(reply.channel_user_id)
             if reply.channel_user_id.isdigit()
             else reply.channel_user_id,
-            "text": reply.text or "",
+            "text": _escape_markdown_v2(reply.text or ""),
             "parse_mode": "MarkdownV2",
         }
 
