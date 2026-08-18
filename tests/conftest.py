@@ -18,6 +18,7 @@ def _isolated_glc_state(monkeypatch, tmp_path):
     monkeypatch.setenv("GLC_AUDIT_DB", str(tmp_path / "audit.sqlite"))
     monkeypatch.setenv("GLC_PAIRING_DB", str(tmp_path / "pairings.sqlite"))
     monkeypatch.setenv("GLC_GATEWAY_DB", str(tmp_path / "gateway.sqlite"))
+    monkeypatch.setenv("GLC_PRESENCE_DB", str(tmp_path / "channel_presence.sqlite"))
 
     # Reset singletons that cache config-dir at first access.
     import glc.config as _cfg
@@ -35,6 +36,9 @@ def _isolated_glc_state(monkeypatch, tmp_path):
     import glc.audit.store as _a
 
     _a._singleton = None
+    import glc.channels.presence as _pres
+
+    _pres._schema_ready = False
 
     # `glc.db.DB_PATH` is bound from the environment at *import* time, so
     # setting GLC_GATEWAY_DB above only isolates the ledger for a module that

@@ -150,7 +150,6 @@ async def lifespan(app: FastAPI):
     app.state.embedders, app.state.embed_order = E.build_embedders()
     _boot_economics(app)
     app.state.started_at = time.time()
-    app.state.registered_channels = []
     agent_bridge = S16AgentBridge()
     app.state.agent_bridge = agent_bridge
     yield

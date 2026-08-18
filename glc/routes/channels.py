@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from glc.audit import append as audit_append
-from glc.channels import registry
+from glc.channels import presence, registry
 from glc.channels.agent_bridge import AgentBridgeError
 from glc.channels.envelope import ChannelMessage, ChannelReply
 from glc.channels.setup import CHANNEL_SPECS, public_catalogue, update
@@ -138,10 +138,7 @@ async def channel_ws(websocket: WebSocket, name: str, token: str | None = Query(
 
     await websocket.accept()
     state = websocket.app.state
-    registered = list(getattr(state, "registered_channels", []))
-    if name not in registered:
-        registered.append(name)
-        state.registered_channels = registered
+    presence.mark_connected(name)
 
     limiter = get_rate_limiter()
     pairings = get_pairing_store()
@@ -301,9 +298,9 @@ async def channel_webhook(name: str, request: Request):
 
 
 @router.get("/v1/channels")
-async def channel_catalogue(request: Request):
+async def channel_catalogue():
     """The dynamic channel surface S16 can inspect without a hard-coded list."""
-    connected = set(getattr(request.app.state, "registered_channels", []))
+    connected = presence.connected_channels()
     return {
         "channels": [
             {"name": name, "connected": name in connected}
