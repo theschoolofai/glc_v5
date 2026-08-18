@@ -152,7 +152,6 @@ class Adapter(ChannelAdapter):
             if reply.channel_user_id.isdigit()
             else reply.channel_user_id,
             "text": reply.text or "",
-            "parse_mode": "MarkdownV2",
         }
 
         if reply.thread_id:

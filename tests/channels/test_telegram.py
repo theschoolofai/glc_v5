@@ -74,6 +74,25 @@ async def test_send_emits_valid_wire_payload(mock, pair_owner):
     assert "text" in body, "Telegram sendMessage requires text"
     assert body["text"] == "hi back"
     assert str(body["chat_id"]) == OWNER_ID
+    assert "parse_mode" not in body, (
+        "agent replies are plain text; MarkdownV2 rejects unescaped '!' and similar"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_plain_text_allows_unescaped_bang(mock, pair_owner):
+    """Regression: MarkdownV2 rejected unescaped '!' so owners never saw replies."""
+    adapter = Adapter(config={"mock": mock})
+    reply = ChannelReply(
+        channel="telegram",
+        channel_user_id=OWNER_ID,
+        text="Hello!",
+    )
+    result = await adapter.send(reply)
+    body = mock.send_log[-1]
+    assert body["text"] == "Hello!"
+    assert "parse_mode" not in body
+    assert not (isinstance(result, dict) and result.get("ok") is False)
 
 
 @pytest.mark.asyncio
