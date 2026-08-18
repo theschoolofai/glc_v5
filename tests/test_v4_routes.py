@@ -14,6 +14,10 @@ from glc.economics import meter as M
 from glc.economics import pricing as P
 
 
+def _admin(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture(autouse=True)
 def _fresh():
     P.reload_pricing()
@@ -170,9 +174,27 @@ def test_budget_defaults_to_ungoverned(app_client):
     assert "unlimited" in body["message"]
 
 
-def test_post_then_get_a_budget(app_client):
+def test_budget_writes_require_the_install_token(app_client, install_token):
+    """The kill-switch is an operator action. Anyone on :8111 must not arm it."""
+    body = {"principal": "session:anon", "limit_usd": 0.0, "period": "lifetime"}
+    assert app_client.post("/v1/budget", json=body).status_code == 401
+    assert app_client.post("/v1/budget", json=body, headers={"Authorization": "Bearer wrong"}).status_code == 403
+    armed = app_client.post("/v1/budget", json=body, headers=_admin(install_token))
+    assert armed.status_code == 200, armed.text
+    assert app_client.request("DELETE", "/v1/budget/session:anon").status_code == 401
+    dropped = app_client.request(
+        "DELETE", "/v1/budget/session:anon", headers=_admin(install_token)
+    )
+    assert dropped.status_code == 200
+    assert dropped.json()["removed"] is True
+    assert app_client.post("/v1/cache/purge").status_code == 401
+
+
+def test_post_then_get_a_budget(app_client, install_token):
     r = app_client.post(
-        "/v1/budget", json={"principal": "session:run-9", "limit_usd": 0.25, "period": "lifetime"}
+        "/v1/budget",
+        json={"principal": "session:run-9", "limit_usd": 0.25, "period": "lifetime"},
+        headers=_admin(install_token),
     )
     assert r.status_code == 200, r.text
     assert r.json()["policy"]["limit_usd"] == 0.25
@@ -184,8 +206,12 @@ def test_post_then_get_a_budget(app_client):
     assert body["policy"]["source"] == "runtime"
 
 
-def test_budget_reflects_real_ledger_spend(app_client):
-    app_client.post("/v1/budget", json={"principal": "user:u9", "limit_usd": 1.0, "period": "lifetime"})
+def test_budget_reflects_real_ledger_spend(app_client, install_token):
+    app_client.post(
+        "/v1/budget",
+        json={"principal": "user:u9", "limit_usd": 1.0, "period": "lifetime"},
+        headers=_admin(install_token),
+    )
     M.get_meter().record(
         provider="gemini_1",
         model="gemini-3.1-flash-lite",
@@ -198,20 +224,34 @@ def test_budget_reflects_real_ledger_spend(app_client):
     assert body["fraction_used"] == pytest.approx(0.25)
 
 
-def test_delete_a_runtime_budget(app_client):
-    app_client.post("/v1/budget", json={"principal": "agent:tmp", "limit_usd": 0.1, "period": "day"})
+def test_delete_a_runtime_budget(app_client, install_token):
+    app_client.post(
+        "/v1/budget",
+        json={"principal": "agent:tmp", "limit_usd": 0.1, "period": "day"},
+        headers=_admin(install_token),
+    )
     assert app_client.get("/v1/budget/agent:tmp").json()["governed"] is True
-    assert app_client.request("DELETE", "/v1/budget/agent:tmp").json()["removed"] is True
+    assert app_client.request(
+        "DELETE", "/v1/budget/agent:tmp", headers=_admin(install_token)
+    ).json()["removed"] is True
     assert app_client.get("/v1/budget/agent:tmp").json()["governed"] is False
 
 
-def test_a_bad_principal_is_a_400(app_client):
+def test_a_bad_principal_is_a_400(app_client, install_token):
     assert app_client.get("/v1/budget/favourite_colour:blue").status_code == 400
-    assert app_client.post("/v1/budget", json={"principal": "nope:x", "limit_usd": 1}).status_code == 400
+    assert app_client.post(
+        "/v1/budget",
+        json={"principal": "nope:x", "limit_usd": 1},
+        headers=_admin(install_token),
+    ).status_code == 400
 
 
-def test_a_negative_limit_is_rejected_by_the_schema(app_client):
-    assert app_client.post("/v1/budget", json={"principal": "agent:a", "limit_usd": -1}).status_code == 422
+def test_a_negative_limit_is_rejected_by_the_schema(app_client, install_token):
+    assert app_client.post(
+        "/v1/budget",
+        json={"principal": "agent:a", "limit_usd": -1},
+        headers=_admin(install_token),
+    ).status_code == 422
 
 
 def test_list_budgets_describes_the_loaded_config(app_client):
@@ -223,13 +263,17 @@ def test_list_budgets_describes_the_loaded_config(app_client):
 # ── the headline: a refused call ────────────────────────────────────────────
 
 
-def test_a_tiny_budget_refuses_the_call_with_402(app_client):
+def test_a_tiny_budget_refuses_the_call_with_402(app_client, install_token):
     """The kill-switch, end to end through HTTP.
 
     A $0 ceiling on the session means the projection cannot fit, so the gateway
     answers 402 and no provider is contacted.
     """
-    app_client.post("/v1/budget", json={"principal": "session:broke", "limit_usd": 0.0, "period": "lifetime"})
+    app_client.post(
+        "/v1/budget",
+        json={"principal": "session:broke", "limit_usd": 0.0, "period": "lifetime"},
+        headers=_admin(install_token),
+    )
     before = len(db.recent(limit=1000))
     r = app_client.post(
         "/v1/chat",
@@ -256,7 +300,7 @@ def test_a_tiny_budget_refuses_the_call_with_402(app_client):
     assert before == len(db.recent(limit=1000))
 
 
-def test_a_generous_budget_admits_the_same_request(app_client):
+def test_a_generous_budget_admits_the_same_request(app_client, install_token):
     """Same request, bigger ceiling: admission passes.
 
     Checked at the controller rather than over HTTP so the assertion is about
@@ -265,14 +309,20 @@ def test_a_generous_budget_admits_the_same_request(app_client):
     from glc.economics import budget as _b
 
     app_client.post(
-        "/v1/budget", json={"principal": "session:rich", "limit_usd": 1000.0, "period": "lifetime"}
+        "/v1/budget",
+        json={"principal": "session:rich", "limit_usd": 1000.0, "period": "lifetime"},
+        headers=_admin(install_token),
     )
     ctl = _b.get_controller()
     projected = ctl.project("gemini_1", "gemini-3.1-flash-lite", 5000, 256)
     assert projected > 0
     assert ctl.admit(M.Principal(session="rich"), projected).allowed is True
 
-    app_client.post("/v1/budget", json={"principal": "session:rich", "limit_usd": 0.0, "period": "lifetime"})
+    app_client.post(
+        "/v1/budget",
+        json={"principal": "session:rich", "limit_usd": 0.0, "period": "lifetime"},
+        headers=_admin(install_token),
+    )
     _b.reload_controller()
     assert _b.get_controller().admit(M.Principal(session="rich"), projected).allowed is False
 
@@ -342,8 +392,8 @@ def test_cache_stats_shape(app_client):
     assert "gemini_prompt_cache" in body
 
 
-def test_cache_purge(app_client):
-    assert app_client.post("/v1/cache/purge").json()["ok"] is True
+def test_cache_purge(app_client, install_token):
+    assert app_client.post("/v1/cache/purge", headers=_admin(install_token)).json()["ok"] is True
 
 
 def test_pricing_endpoint_resolves_one_model(app_client):

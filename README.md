@@ -135,13 +135,13 @@ budget or routing file raises rather than silently degrading into "no budget" â€
 ```
 GET    /v1/budget                 every loaded policy
 GET    /v1/budget/{principal}     limit, spend, remaining â€” e.g. /v1/budget/session:run-42
-POST   /v1/budget                 arm or move a ceiling at runtime (limit_usd: 0 = stop now)
-DELETE /v1/budget/{principal}     drop a runtime override
+POST   /v1/budget                 arm or move a ceiling (install token; limit_usd: 0 = stop now)
+DELETE /v1/budget/{principal}     drop a runtime override (install token)
 GET    /v1/cost/by_principal      five-dimension rollup (superset of /v1/cost/by_agent)
 GET    /v1/cache/stats            hit rate, tokens and dollars saved
 GET    /v1/pricing                the resolved price table, or one (provider, model)
 GET    /v1/telemetry              tracer state and exporters
-POST   /v1/cache/purge            drop expired (or all) cache entries
+POST   /v1/cache/purge            drop expired (or all) cache entries (install token)
 ```
 
 `POST /v1/chat` keeps its contract. New **optional** request fields:
@@ -154,6 +154,7 @@ unless the corresponding feature ran.
 ```bash
 # ceiling for one run, enforced before any provider is contacted
 curl -s -X POST http://127.0.0.1:8111/v1/budget \
+  -H "Authorization: Bearer $(cat ~/.glc/install_token)" \
   -H 'Content-Type: application/json' \
   -d '{"principal": "session:run-42", "limit_usd": 0.50, "period": "lifetime"}'
 
