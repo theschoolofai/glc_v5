@@ -77,6 +77,23 @@ async def test_send_emits_valid_wire_payload(mock, pair_owner):
 
 
 @pytest.mark.asyncio
+async def test_in_reply_to_is_rfc_message_id_not_gmail_thread_id(mock, pair_owner):
+    """Gmail threadId is an API handle. RFC 5322 In-Reply-To must be a Message-ID."""
+    adapter = Adapter(config={"mock": mock})
+    inbound = await adapter.on_message(mock.queue_owner_message("hello from owner"))
+    assert inbound is not None
+    assert inbound.thread_id.startswith("thread-")
+    await adapter.send(ChannelReply(
+        channel="gmail", channel_user_id=OWNER_ID, text="hi back", thread_id=inbound.thread_id,
+    ))
+    raw_b64 = mock.send_log[0]["raw"]
+    padded = raw_b64 + "=" * (-len(raw_b64) % 4)
+    decoded = base64.urlsafe_b64decode(padded.encode())
+    assert b"In-Reply-To: <owner-at-example.com@mail.example>" in decoded
+    assert inbound.thread_id.encode() not in decoded
+
+
+@pytest.mark.asyncio
 async def test_disconnect_is_handled(mock, pair_owner):
     adapter = Adapter(config={"mock": mock})
     mock.force_disconnect()

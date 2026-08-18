@@ -48,6 +48,7 @@ def _build_multipart(*, from_addr: str, to_addr: str, subject: str, text_body: s
     msg["To"] = to_addr
     msg["Subject"] = subject
     msg["Date"] = "Wed, 17 Jun 2026 12:00:00 +0000"
+    msg["Message-ID"] = f"<{from_addr.replace('@', '-at-')}@mail.example>"
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
     return bytes(msg)
