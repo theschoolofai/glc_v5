@@ -202,3 +202,78 @@ def test_module_singleton_reloads_via_hook(tmp_path, monkeypatch):
     eng_mod.reload_engine()
     v2 = eng_mod.evaluate({"name": "ping", "arguments": {}}, {"channel": "x", "trust_level": "owner_paired"})
     assert v2.action == "deny"
+
+
+# --- ** patterns must stay fnmatch --------------------------------------------
+#
+# policy.yaml documents condition.path_glob as an fnmatch glob. The `**` branch
+# of _matches_glob leaves fnmatch and hand-rolls a regex that only ever unescapes
+# `*`, so `?` and `[...]` survive re.escape as literals and the rule matches
+# nothing. A deny rule that matches nothing is not inert: evaluate() then falls
+# through to default-allow for owner_paired, and the call is permitted.
+
+
+def test_a_character_class_deny_rule_is_not_silently_bypassed():
+    """A deny rule that matches nothing is not a no-op. It is an allow."""
+    eng = _engine(
+        [
+            PolicyRule(
+                tool="file.delete",
+                condition={"path_glob": "~/[Dd]ocuments/**"},
+                action="deny",
+                reason="docs are protected",
+            ),
+        ]
+    )
+    v = eng.evaluate(
+        {"name": "file.delete", "arguments": {"path": "~/Documents/secrets/keys.txt"}},
+        {"channel": "x", "trust_level": "owner_paired"},
+    )
+    assert v.action == "deny"
+
+
+def test_a_question_mark_deny_rule_is_not_silently_bypassed():
+    eng = _engine(
+        [
+            PolicyRule(
+                tool="file.read",
+                condition={"path_glob": "~/.ssh/id_?sa**"},
+                action="deny",
+                reason="private keys are protected",
+            ),
+        ]
+    )
+    v = eng.evaluate(
+        {"name": "file.read", "arguments": {"path": "~/.ssh/id_rsa"}},
+        {"channel": "x", "trust_level": "owner_paired"},
+    )
+    assert v.action == "deny"
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("~/Documents/a.txt", True),
+        ("~/documents/a.txt", True),
+        ("~/Downloads/a.txt", False),
+    ],
+)
+def test_the_two_star_forms_agree_about_a_character_class(path: str, expected: bool):
+    """`*` and `**` differ only in whether they cross a separator. Every other
+    metacharacter must mean the same thing in both."""
+    from glc.policy.engine import _matches_glob
+
+    assert _matches_glob(path, "~/[Dd]ocuments/*") is expected
+    assert _matches_glob(path, "~/[Dd]ocuments/**") is expected
+
+
+def test_the_two_star_forms_agree_about_a_newline_in_the_value():
+    r"""`fnmatch.translate` wraps its output in `(?s:...)`, so `*` spans a
+    newline. The hand-rolled `**` regex has no DOTALL, so it does not. A value
+    is attacker-shaped: a path argument carrying a newline must not decide
+    which half of this function it is judged by."""
+    from glc.policy.engine import _matches_glob
+
+    embedded = "/etc/pa" + chr(10) + "sswd"
+    assert _matches_glob(embedded, "/etc/*") is True
+    assert _matches_glob(embedded, "/etc/**") is True

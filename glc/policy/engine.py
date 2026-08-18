@@ -16,6 +16,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -35,13 +36,69 @@ _SAFE_DEFAULT = PolicyConfig(
 )
 
 
+@lru_cache(maxsize=512)
+def _double_star_regex(pattern: str) -> re.Pattern[str]:
+    """Translate a `**` glob, keeping every other fnmatch metacharacter.
+
+    `re.escape(pattern).replace(...)` cannot do this. It escapes the whole
+    pattern first, so only the substitutions it names survive: `?` and `[...]`
+    stay escaped and match themselves. A rule written as `~/[Dd]ocuments/**`
+    then matches nothing at all — and a `deny` that matches nothing is not
+    inert, because `evaluate()` falls through to default-allow.
+
+    So the pattern is scanned rather than escaped. The one thing that differs
+    from `fnmatch` is deliberate and is the reason this branch exists:
+
+        `**`  crosses a path separator
+        `*`   does not
+        `?`   one character, not a separator
+        `[…]` fnmatch's character class, `!` or `^` to negate
+
+    `(?s:…)` and `\\Z` mirror `fnmatch.translate`, so a value carrying a
+    newline is judged the same way by both halves of `_matches_glob`.
+    """
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "*":
+            i += 1
+            if i < n and pattern[i] == "*":
+                while i < n and pattern[i] == "*":
+                    i += 1
+                out.append(".*")
+            else:
+                out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+            i += 1
+        elif char == "[":
+            end = i + 1
+            if end < n and pattern[end] in "!^":
+                end += 1
+            if end < n and pattern[end] == "]":
+                end += 1
+            while end < n and pattern[end] != "]":
+                end += 1
+            if end >= n:  # unterminated class: fnmatch treats "[" as a literal
+                out.append(re.escape(char))
+                i += 1
+            else:
+                body = pattern[i + 1 : end].replace("\\", r"\\")
+                out.append("[" + ("^" + body[1:] if body[:1] in ("!", "^") else body) + "]")
+                i = end + 1
+        else:
+            out.append(re.escape(char))
+            i += 1
+    return re.compile("(?s:" + "".join(out) + r")\Z")
+
+
 def _matches_glob(value: Any, pattern: str) -> bool:
     if not isinstance(value, str):
         return False
-    # fnmatch's ** support is weak; substitute ** for a regex-ish pattern.
+    # fnmatch has no separator-aware `**`, so that form gets its own translator.
     if "**" in pattern:
-        regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
-        return bool(re.match(regex + "$", value))
+        return bool(_double_star_regex(pattern).match(value))
     return fnmatch.fnmatch(value, pattern)
 
 
