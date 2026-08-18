@@ -546,6 +546,11 @@ class OpenAICompatProvider(BaseProvider):
             choice = (d.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
             text = msg.get("content") or ""
+            # Groq and Cerebras always return reasoning in its own field, never
+            # merged into content -- confirmed live, even when reasoning was
+            # never requested. Those tokens are generated and billed either
+            # way; capturing them costs nothing further and was not happening.
+            reasoning_text = msg.get("reasoning") or None
             tool_calls_out = []
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
@@ -577,6 +582,7 @@ class OpenAICompatProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
+                "reasoning_text": reasoning_text,
             }
 
     async def stream(

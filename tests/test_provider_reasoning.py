@@ -144,6 +144,83 @@ async def test_healing_gives_up_rather_than_spinning(monkeypatch):
         await _Compat().chat([{"role": "user", "content": "hi"}], reasoning="off", max_tokens=64)
 
 
+# ── the provider's own reasoning field ──────────────────────────────────────
+#
+# Groq and Cerebras always return reasoning in its own `message.reasoning`
+# field -- confirmed live, even when `reasoning` is completely unset. Those
+# tokens are generated and billed (`usage.completion_tokens_details.
+# reasoning_tokens`, measured live: 49 at unset, 21 at "low", 189 at "high",
+# same prompt) and were read nowhere in this file. G8 in the S17 ledger.
+
+
+@pytest.mark.asyncio
+async def test_the_providers_own_reasoning_field_is_captured_not_discarded(monkeypatch):
+    class _R:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{
+                    "message": {"content": "391", "reasoning": "17*24=408, sqrt(289)=17, 408-17=391"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 31},
+            }
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            return _R()
+
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kw: _Client())
+    out = await _Compat().chat([{"role": "user", "content": "hi"}], max_tokens=64)
+
+    assert out["reasoning_text"] == "17*24=408, sqrt(289)=17, 408-17=391"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_text_is_none_when_the_provider_sends_none(monkeypatch):
+    class _R:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "391"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+            }
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            return _R()
+
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kw: _Client())
+    out = await _Compat().chat([{"role": "user", "content": "hi"}], max_tokens=64)
+
+    assert out["reasoning_text"] is None
+
+
+def test_chat_response_accepts_reasoning_text():
+    from glc.llm_schemas import ChatResponse
+
+    with_reasoning = ChatResponse(provider="groq", model="openai/gpt-oss-120b", text="391",
+                                  reasoning_text="because 408-17=391")
+    without_reasoning = ChatResponse(provider="groq", model="openai/gpt-oss-120b", text="391")
+
+    assert with_reasoning.reasoning_text == "because 408-17=391"
+    assert without_reasoning.reasoning_text is None
+
+
 # ── the timeout cooldown ────────────────────────────────────────────────────
 
 
