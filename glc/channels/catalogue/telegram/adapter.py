@@ -166,9 +166,17 @@ class Adapter(ChannelAdapter):
             return await mock.send(payload)
 
         # Real Telegram send logic
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
         if not token:
-            return payload
+            # Returning `payload` here handed the caller something shaped exactly
+            # like a dispatch result for a message that never left the process,
+            # and the gateway turned that into 200 {"accepted": true}. An
+            # unconfigured channel has to fail closed and loudly: a dropped
+            # message must never be indistinguishable from a delivered one.
+            raise RuntimeError(
+                "telegram is not configured: TELEGRAM_BOT_TOKEN is unset, so this "
+                "message cannot be sent"
+            )
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
