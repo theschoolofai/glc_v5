@@ -80,6 +80,7 @@ class BudgetPolicy:
             "period": self.period,
             "include_errors": self.include_errors,
             "source": self.source,
+	    "is_glob": self.is_glob,
         }
 
 
