@@ -99,10 +99,11 @@ def get_or_create_install_token() -> str:
         return p.read_text().strip()
     import secrets
 
+    # Deferred: glc.security's package init imports glc.config (via
+    # allowlists.py), so importing this at module level would be circular.
+    from glc.security.file_permissions import restrict_to_owner
+
     tok = secrets.token_urlsafe(32)
     p.write_text(tok)
-    try:
-        os.chmod(p, 0o600)
-    except OSError:
-        pass
+    restrict_to_owner(p)
     return tok
