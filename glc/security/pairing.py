@@ -39,6 +39,21 @@ def _conn():
         c.close()
 
 
+def _normalize_id(channel_user_id: str) -> str:
+    """Identity comparisons happen here, once, for every channel.
+
+    Telegram/Discord/WhatsApp ids are numeric — normalizing is a no-op. Email
+    (gmail, imap) is the case that matters: the adapters extract the bare
+    address straight off the From: header with no lowercasing, and real mail
+    clients/MTAs are not consistent about local-part case even for the same
+    real inbox. RFC 5321 permits a case-sensitive local part in theory; no
+    real provider, Gmail included, treats it that way. Without this, the
+    exact same person pairs once and then silently classifies as untrusted
+    the next time their address arrives in different case.
+    """
+    return channel_user_id.strip().lower()
+
+
 @dataclass
 class PairingRecord:
     channel: str
@@ -84,6 +99,7 @@ class PairingStore:
         *,
         requested_trust_level: str = "user_paired",
     ) -> tuple[str, float]:
+        channel_user_id = _normalize_id(channel_user_id)
         code = f"{secrets.randbelow(1_000_000):06d}"
         expires_at = time.time() + CODE_TTL_SECONDS
         with _conn() as c:
@@ -132,7 +148,7 @@ class PairingStore:
         with _conn() as c:
             row = c.execute(
                 "SELECT * FROM pairings WHERE channel=? AND channel_user_id=?",
-                (channel, channel_user_id),
+                (channel, _normalize_id(channel_user_id)),
             ).fetchone()
             if row is None:
                 return None
@@ -180,7 +196,7 @@ class PairingStore:
         with _conn() as c:
             cur = c.execute(
                 "DELETE FROM pairings WHERE channel=? AND channel_user_id=?",
-                (channel, channel_user_id),
+                (channel, _normalize_id(channel_user_id)),
             )
             return cur.rowcount > 0
 
@@ -190,6 +206,7 @@ class PairingStore:
         """Out-of-band pairing for the installation owner. Used by the
         installer to bootstrap the first owner identity. Not exposed
         through HTTP."""
+        channel_user_id = _normalize_id(channel_user_id)
         paired_at = time.time()
         with _conn() as c:
             c.execute(
