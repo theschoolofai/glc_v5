@@ -216,8 +216,8 @@
       <p class="pnote">Span hierarchy with real start offsets and durations. An agent run traces as
       run → agent loop → plan → node → provider call, from the same journal the UI streams.</p>
       <div class="row2">
-        <input class="act" id="in-run" placeholder="S15Code run_id (optional)">
-        <input class="act" id="in-base" placeholder="agent runtime base URL (blank = server default)">
+        <input class="act" id="in-run" placeholder="agent run_id (optional)">
+        <span class="pnote">Runtime is GLC_S17_BASE_URL / GLC_S15_BASE_URL on the server — not a URL you type.</span>
         <button class="act" id="btn-run">Load agent run trace</button>
         <span class="pill" id="p-wf">—</span>
       </div>
@@ -744,10 +744,8 @@ async function loadAgentTrace() {
   const id = $("in-run").value.trim();
   if (!id) { $("p-wf").className = "pill warn"; $("p-wf").textContent = "enter a run_id"; return; }
   $("p-wf").textContent = "loading…";
-  const base = $("in-base").value.trim();
-  const q = base ? `?base_url=${encodeURIComponent(base)}` : "";
   try {
-    const r = await fetch(`/v1/observability/agent_trace/${encodeURIComponent(id)}${q}`, { cache: "no-store" });
+    const r = await fetch(`/v1/observability/agent_trace/${encodeURIComponent(id)}`, { cache: "no-store" });
     const body = await r.json();
     if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
     selectedTrace = null;
@@ -827,8 +825,7 @@ $("btn-refresh").addEventListener("click", tick);
 $("btn-live").addEventListener("click", () => setLive(!live));
 $("sel-every").addEventListener("change", () => setLive(live));
 $("btn-run").addEventListener("click", loadAgentTrace);
-["in-run", "in-base"].forEach((id) =>
-  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") loadAgentTrace(); }));
+$("in-run").addEventListener("keydown", (e) => { if (e.key === "Enter") loadAgentTrace(); });
 $("c-wf").innerHTML = empty("Pick a trace above, or load an S15Code agent run by id.");
 tick().then(() => setLive(true));
 </script>

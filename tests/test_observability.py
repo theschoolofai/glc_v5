@@ -269,15 +269,42 @@ def test_a_non_json_refusal_is_still_recorded():
 
 def test_agent_trace_says_so_when_no_runtime_is_configured(monkeypatch, app_client):
     monkeypatch.delenv("GLC_S15_BASE_URL", raising=False)
+    monkeypatch.delenv("GLC_S17_BASE_URL", raising=False)
+    monkeypatch.delenv("S16_BASE_URL", raising=False)
     r = app_client.get("/v1/observability/agent_trace/run-1")
     assert r.status_code == 503
-    assert "GLC_S15_BASE_URL" in r.json()["detail"]
+    assert "GLC_S17_BASE_URL" in r.json()["detail"]
 
 
-def test_agent_trace_reports_an_unreachable_runtime(app_client):
+def test_agent_trace_refuses_client_supplied_base_url(monkeypatch, app_client):
+    """A dashboard visitor must not pick the fetch target.
+
+    Before this fix, `?base_url=http://127.0.0.1:8111/v1/control/kill` made
+    GLC connect there. The query parameter is refused before any HTTP client
+    is constructed.
+    """
+    monkeypatch.delenv("GLC_S15_BASE_URL", raising=False)
+    monkeypatch.delenv("GLC_S17_BASE_URL", raising=False)
+    monkeypatch.delenv("S16_BASE_URL", raising=False)
     r = app_client.get(
         "/v1/observability/agent_trace/run-1",
-        params={"base_url": "http://127.0.0.1:1"},  # nothing listens on port 1
+        params={"base_url": "http://127.0.0.1:8111/v1/control/kill"},
     )
+    assert r.status_code == 400
+    assert "base_url" in r.json()["detail"]
+
+
+def test_agent_trace_ignores_client_base_url_even_when_env_is_set(monkeypatch, app_client):
+    monkeypatch.setenv("GLC_S17_BASE_URL", "http://127.0.0.1:1")
+    r = app_client.get(
+        "/v1/observability/agent_trace/run-1",
+        params={"base_url": "http://169.254.169.254/latest/meta-data/"},
+    )
+    assert r.status_code == 400
+
+
+def test_agent_trace_reports_an_unreachable_runtime(monkeypatch, app_client):
+    monkeypatch.setenv("GLC_S17_BASE_URL", "http://127.0.0.1:1")
+    r = app_client.get("/v1/observability/agent_trace/run-1")
     assert r.status_code == 502
     assert "unreachable" in r.json()["detail"]

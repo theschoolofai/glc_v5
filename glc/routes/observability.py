@@ -27,10 +27,11 @@ cannot render at all is not), and the gateway knows things the exporter drops â€
 which principal, which tier, whether the budget admitted the call. The trace *ids*
 are the same ids Jaeger holds, so every row deep-links into the real waterfall.
 
-The agent-trace proxy exists because a browser cannot reach the S15Code process
+The agent-trace proxy exists because a browser cannot reach the agent runtime
 from a page served here without CORS, and widening CORS to satisfy a dashboard is
 a poor trade. The gateway holds the credential-free HTTP hop instead. Set
-`GLC_S15_BASE_URL`; leave it unset and the route says so.
+`GLC_S17_BASE_URL` (or `GLC_S15_BASE_URL` / `S16_BASE_URL`); leave them unset
+and the route says so. Callers cannot pick the target â€” `?base_url=` is refused.
 """
 
 from __future__ import annotations
@@ -190,23 +191,55 @@ async def trace_detail(trace_id: str, request: Request):
     return detail
 
 
+MAX_TRACE_CHARS = 200_000
+AGENT_RUNTIME_ENV = ("GLC_S17_BASE_URL", "GLC_S15_BASE_URL", "S16_BASE_URL")
+
+
+def _configured_agent_runtime() -> str:
+    """The operator names the agent process. Callers do not."""
+    for name in AGENT_RUNTIME_ENV:
+        value = (os.getenv(name) or "").strip().rstrip("/")
+        if value:
+            return value
+    return ""
+
+
 @router.get("/v1/observability/agent_trace/{run_id}")
 async def agent_trace(run_id: str, request: Request, base_url: str | None = None):
-    """Proxy one S15Code run's OTel span tree, so the page can draw a waterfall."""
-    target = (base_url or os.getenv("GLC_S15_BASE_URL") or "").rstrip("/")
+    """Proxy one agent-runtime run's OTel span tree.
+
+    The target is operator configuration, never a query parameter. A browser
+    hitting `/dashboard` used to pass `?base_url=`; that is a confused-deputy
+    fetch of whatever host the visitor typed, including loopback admin ports
+    and cloud metadata. Image fetches already go through the SSRF guard;
+    this proxy did not.
+    """
+    if base_url:
+        raise HTTPException(
+            400,
+            "base_url is not accepted from the client; set GLC_S17_BASE_URL "
+            "(or GLC_S15_BASE_URL / S16_BASE_URL) on the gateway instead",
+        )
+    target = _configured_agent_runtime()
     if not target:
         raise HTTPException(
             503,
-            "no agent runtime configured: set GLC_S15_BASE_URL "
-            "(or pass ?base_url=) to enable agent-run traces",
+            "no agent runtime configured: set GLC_S17_BASE_URL "
+            "(or GLC_S15_BASE_URL / S16_BASE_URL) to enable agent-run traces",
         )
     import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             resp = await client.get(f"{target}/v1/agent/runs/{run_id}/trace")
     except Exception as e:
         raise HTTPException(502, f"agent runtime unreachable at {target}: {type(e).__name__}") from e
     if resp.status_code != 200:
         raise HTTPException(resp.status_code, f"agent runtime said: {resp.text[:300]}")
-    return {"source": target, **resp.json()}
+    if len(resp.content) > MAX_TRACE_CHARS:
+        raise HTTPException(502, "agent runtime trace exceeded size cap")
+    try:
+        payload = resp.json()
+    except Exception:
+        raise HTTPException(502, "agent runtime did not return JSON") from None
+    return {"source": target, **payload}
