@@ -136,6 +136,60 @@ def _extract_text_blocks(content: Any) -> str:
     return "\n".join(parts)
 
 
+_THINK_BLOCK = re.compile(
+    r"<(think|thinking)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_think_markup(text: str) -> str:
+    """Remove leaked chain-of-thought markup from assistant-visible text."""
+    if not text:
+        return ""
+    cleaned = _THINK_BLOCK.sub("", text)
+    # Trailing orphan open tags (truncated generations).
+    cleaned = re.sub(r"<(think|thinking)\b[^>]*>.*$", "", cleaned, flags=re.I | re.S)
+    return cleaned.strip()
+
+
+def _assistant_visible_text(message: dict[str, Any] | None) -> str:
+    """Visible reply only — never reasoning_content or <think> leakage.
+
+    Qwen3 / vLLM-style models often put chain-of-thought in `reasoning_content`
+    or wrap it in <think> tags inside `content`. Downstream JSON parsers (S17)
+    fail when that prose is treated as the answer.
+    """
+    msg = message or {}
+    content = msg.get("content")
+    if isinstance(content, list):
+        content = _extract_text_blocks(content)
+    text = content if isinstance(content, str) else (content or "")
+    text = _strip_think_markup(text)
+    if text:
+        return text
+    # Some servers only populate reasoning_content; still strip markup if present.
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+    if isinstance(reasoning, str) and reasoning.strip():
+        # Reasoning is not the answer — do not return it as visible text.
+        return ""
+    return ""
+
+
+def _gemini_visible_text(parts: list[dict[str, Any]]) -> str:
+    """Join Gemini text parts, skipping thought-only / thought-flagged parts."""
+    chunks: list[str] = []
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("thought") is True:
+            continue
+        # Thought signatures travel with tool calls; plain thought text has no
+        # user-visible payload beyond the thought flag above.
+        if "text" in part and not part.get("functionCall") and not part.get("function_call"):
+            chunks.append(part.get("text") or "")
+    return _strip_think_markup("".join(chunks))
+
+
 class ProviderError(Exception):
     def __init__(self, msg, status=None, retryable=True):
         super().__init__(msg)
@@ -545,7 +599,7 @@ class OpenAICompatProvider(BaseProvider):
             d = r.json()
             choice = (d.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
-            text = msg.get("content") or ""
+            text = _assistant_visible_text(msg)
             tool_calls_out = []
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
@@ -879,7 +933,7 @@ class GeminiProvider(BaseProvider):
                     f"gemini no candidates: {json.dumps(d)[:200]}", status=200, retryable=True
                 )
             parts = cands[0].get("content", {}).get("parts", []) or []
-            text = "".join(p.get("text", "") for p in parts if "text" in p)
+            text = _gemini_visible_text(parts)
             tool_calls_out = []
             for p in parts:
                 fc = p.get("functionCall") or p.get("function_call")
