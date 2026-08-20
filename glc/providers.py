@@ -546,6 +546,11 @@ class OpenAICompatProvider(BaseProvider):
             choice = (d.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
             text = msg.get("content") or ""
+            # Groq and Cerebras always return reasoning in its own field, never
+            # merged into content -- confirmed live, even when reasoning was
+            # never requested. Those tokens are generated and billed either
+            # way; capturing them costs nothing further and was not happening.
+            reasoning_text = msg.get("reasoning") or None
             tool_calls_out = []
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
@@ -577,6 +582,7 @@ class OpenAICompatProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
+                "reasoning_text": reasoning_text,
             }
 
     async def stream(
@@ -844,10 +850,16 @@ class GeminiProvider(BaseProvider):
         if reasoning and reasoning != "off":
             knob = _gemini_thinking_knob(m)
             if knob == "level":
-                body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": reasoning}
+                body["generationConfig"]["thinkingConfig"] = {
+                    "thinkingLevel": reasoning,
+                    "includeThoughts": True,
+                }
                 reasoning_applied = True
             elif knob == "budget":
-                body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": _GEMINI_BUDGETS[reasoning]}
+                body["generationConfig"]["thinkingConfig"] = {
+                    "thinkingBudget": _GEMINI_BUDGETS[reasoning],
+                    "includeThoughts": True,
+                }
                 reasoning_applied = True
 
         url = f"{self.base_url}/models/{m}:generateContent?key={self.api_key}"
@@ -879,7 +891,23 @@ class GeminiProvider(BaseProvider):
                     f"gemini no candidates: {json.dumps(d)[:200]}", status=200, retryable=True
                 )
             parts = cands[0].get("content", {}).get("parts", []) or []
-            text = "".join(p.get("text", "") for p in parts if "text" in p)
+            # Gemini marks reasoning parts with a sibling `thought: true`, not a
+            # separate response field -- split before joining so thought content
+            # never lands in `text`. Known gap, intentionally not handled here:
+            # some configurations return thought content as a plain text part
+            # prefixed "THOUGHT:" instead of setting the `thought` flag
+            # (googleapis/python-genai#2121, upstream, unfixed as of this
+            # writing) -- those slip through as answer text same as before.
+            answer_chunks: list[str] = []
+            thought_chunks: list[str] = []
+            for p in parts:
+                if "text" not in p:
+                    continue
+                (thought_chunks if p.get("thought") is True else answer_chunks).append(
+                    p.get("text", "")
+                )
+            text = "".join(answer_chunks)
+            reasoning_text = "".join(thought_chunks) or None
             tool_calls_out = []
             for p in parts:
                 fc = p.get("functionCall") or p.get("function_call")
@@ -914,6 +942,7 @@ class GeminiProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
+                "reasoning_text": reasoning_text,
             }
 
 
