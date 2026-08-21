@@ -71,6 +71,20 @@ VISION_MODEL_HINTS = (
 )
 
 
+#: How much of a failed provider response to keep.
+#:
+#: This is not a display limit. ``_backoff_for`` in routes/chat.py decides how
+#: long to bench a key by *reading this string*, so whatever is cut here is
+#: invisible to the router's own decisions — not merely to a human reading a log.
+#:
+#: Google puts its human-readable message and two documentation URLs first, and
+#: the machine-readable ``details`` — the QuotaFailure carrying ``quotaId``, and
+#: the RetryInfo carrying ``retryDelay`` — after them. At 400 characters the
+#: prose survived and every fact was dropped, leaving a body that is not even
+#: parseable JSON: it ends mid-string, before the array that says which window
+#: was exhausted and how long to wait.
+ERROR_BODY_CHARS = 2000
+
 def _model_supports_vision(provider: str, model: str) -> bool:
     m = (model or "").lower()
     if provider == "gemini":
@@ -538,7 +552,7 @@ class OpenAICompatProvider(BaseProvider):
                     r = await c.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
                 if r.status_code != 200:
                     raise ProviderError(
-                        f"{self.name} HTTP {r.status_code}: {r.text[:300]}",
+                        f"{self.name} HTTP {r.status_code}: {r.text[:ERROR_BODY_CHARS]}",
                         status=r.status_code,
                         retryable=(r.status_code not in (400, 401)),
                     )
@@ -613,7 +627,7 @@ class OpenAICompatProvider(BaseProvider):
                 "POST", f"{self.base_url}/chat/completions", headers=self._headers(), json=body
             ) as r:
                 if r.status_code != 200:
-                    text = (await r.aread()).decode("utf-8", "ignore")[:300]
+                    text = (await r.aread()).decode("utf-8", "ignore")[:ERROR_BODY_CHARS]
                     raise ProviderError(f"{self.name} HTTP {r.status_code}: {text}", status=r.status_code)
                 async for line in r.aiter_lines():
                     if not line or not line.startswith("data: "):
@@ -868,7 +882,7 @@ class GeminiProvider(BaseProvider):
                     r = await c.post(url, json=body)
                 if r.status_code != 200:
                     raise ProviderError(
-                        f"gemini HTTP {r.status_code}: {r.text[:400]}",
+                        f"gemini HTTP {r.status_code}: {r.text[:ERROR_BODY_CHARS]}",
                         status=r.status_code,
                         retryable=(r.status_code not in (400, 401)),
                     )
@@ -1147,7 +1161,8 @@ class OllamaProvider(BaseProvider):
         async with httpx.AsyncClient(timeout=600) as c:
             r = await c.post(f"{self.base_url}/api/chat", json=body)
             if r.status_code != 200:
-                raise ProviderError(f"ollama HTTP {r.status_code}: {r.text[:300]}", status=r.status_code)
+                raise ProviderError(f"ollama HTTP {r.status_code}: {r.text[:ERROR_BODY_CHARS]}",
+                                    status=r.status_code)
             d = r.json()
             msg = d.get("message", {}) or {}
             text = msg.get("content", "") or ""
