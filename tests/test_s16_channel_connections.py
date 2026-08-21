@@ -132,3 +132,53 @@ def test_proactive_send_rejects_missing_authority(app_client):
         json={"channel": "telegram", "channel_user_id": "42", "text": "hello"},
     )
     assert response.status_code == 401
+
+
+def test_an_unexpected_bridge_failure_is_recorded_and_the_socket_survives(
+    app_client, install_token, monkeypatch
+):
+    """A channel that goes deaf must say so, and must not go deaf for one bad message.
+
+    The receive loop caught AgentBridgeError and WebSocketDisconnect. Anything
+    else -- a database hiccup while auditing, an unexpected payload shape --
+    ended the handler with no close frame and no audit row. The bridge saw a
+    bare broken pipe and the gateway wrote down nothing, so a channel that had
+    stopped listening was indistinguishable from one nobody had written to.
+    """
+    import glc.routes.channels as channel_routes
+
+    monkeypatch.setattr(channel_routes, "allowed", lambda *args, **kwargs: (True, "enabled for proof"))
+
+    class ExplodingOnce:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def handle(self, message: ChannelMessage) -> ChannelReply:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("sqlite is locked")
+            return ChannelReply(channel=message.channel, channel_user_id=message.channel_user_id,
+                                text="second message got through", thread_id=message.thread_id)
+
+    bridge = ExplodingOnce()
+    app_client.app.state.agent_bridge = bridge
+    name = registry.list_channels()[0]
+
+    def envelope(text: str) -> ChannelMessage:
+        return ChannelMessage(channel=name, channel_user_id="42", user_handle="owner", text=text,
+                              thread_id="t-1", trust_level="owner_paired", arrived_at=datetime.now(UTC))
+
+    with app_client.websocket_connect(f"/v1/channels/{name}?token={install_token}") as socket:
+        socket.send_text(envelope("first").model_dump_json())
+        failure = socket.receive_json()
+        assert failure["status"] == 500
+        assert "sqlite is locked" in failure["error"]
+
+        # The connection is still usable: one bad message is not a dead channel.
+        socket.send_text(envelope("second").model_dump_json())
+        assert socket.receive_json()["text"] == "second message got through"
+
+    from glc.audit.store import query
+
+    kinds = [row["event_type"] for row in query(limit=20)]
+    assert "channel_error" in kinds, "a failure nobody records is a failure nobody can find"

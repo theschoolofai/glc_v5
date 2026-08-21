@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
@@ -30,6 +31,8 @@ from glc.config import get_or_create_install_token, load_channels
 from glc.security.allowlists import allowed
 from glc.security.pairing import get_pairing_store
 from glc.security.rate_limits import get_rate_limiter
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -212,6 +215,24 @@ async def channel_ws(websocket: WebSocket, name: str, token: str | None = Query(
                     result={"error": str(error)},
                 )
                 await websocket.send_text(json.dumps({"status": 503, "error": str(error)}))
+                continue
+            except Exception as error:
+                # Anything unforeseen used to end the handler here: no close
+                # frame, no audit row. The adapter saw a broken pipe with no
+                # explanation, and a channel that had stopped listening looked
+                # exactly like a channel nobody had written to. One bad message
+                # is not a dead channel, and a failure nobody records is a
+                # failure nobody can find.
+                log.exception("channel %s failed while handling a message", env.channel)
+                audit_append(
+                    channel=env.channel,
+                    channel_user_id=env.channel_user_id,
+                    trust_level=env.trust_level,
+                    event_type="channel_error",
+                    result={"error": f"{type(error).__name__}: {error}"},
+                )
+                await websocket.send_text(json.dumps(
+                    {"status": 500, "error": f"{type(error).__name__}: {error}"}))
                 continue
             await websocket.send_text(reply.model_dump_json())
     except WebSocketDisconnect:
