@@ -230,6 +230,10 @@ async def channel_webhook_verify(name: str, request: Request):
     token = params.get("hub.verify_token", "")
     challenge = params.get("hub.challenge", "")
     expected = os.environ.get(f"{name.upper()}_VERIFY_TOKEN", "")
+    # Fail closed when no token is configured: compare_digest('', '') is True,
+    # so an empty token against an unset env var would pass the handshake.
+    if not expected:
+        raise HTTPException(status_code=403)
     if mode == "subscribe" and hmac.compare_digest(token, expected):
         return PlainTextResponse(challenge)
     raise HTTPException(status_code=403)

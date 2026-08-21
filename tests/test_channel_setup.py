@@ -76,6 +76,21 @@ def test_only_meta_get_verification_is_exposed(app_client):
     assert app_client.get("/v1/channels/whatsapp/webhook").status_code == 403
 
 
+def test_meta_verification_fails_closed_when_token_unset(app_client, monkeypatch):
+    """With WHATSAPP_VERIFY_TOKEN unset, an empty verify_token must not pass.
+
+    hmac.compare_digest('', '') is True, so an empty token against an unset
+    env var would complete the Meta hub handshake. The check must fail closed
+    when no token is configured.
+    """
+    monkeypatch.delenv("WHATSAPP_VERIFY_TOKEN", raising=False)
+    resp = app_client.get(
+        "/v1/channels/whatsapp/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "challenge-123"},
+    )
+    assert resp.status_code == 403
+
+
 def test_rejects_unknown_channel_and_unknown_setting(app_client, install_token):
     missing = app_client.put("/v1/channel-admin/not-real", headers=_auth(install_token), json={"enabled": True})
     assert missing.status_code == 404
