@@ -19,7 +19,7 @@ distiller: gemini
 summariser: gemini
 critic: groq
 formatter: gemini
-retriever: github
-sandbox_executor: github
+retriever: gemini
+sandbox_executor: gemini
 coder: gemini
 browser: gemini

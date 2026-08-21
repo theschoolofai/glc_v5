@@ -25,13 +25,13 @@ version: 1
 # of a 503.
 tiers:
   TINY:
-    order: [github, openrouter, groq, nvidia, cerebras, gemini, ollama]
+    order: [gemini_1, openrouter, groq, nvidia, cerebras, ollama]
     description: short, simple, factual
   LARGE:
-    order: [gemini, groq, nvidia, cerebras, github, openrouter, ollama]
+    order: [gemini_1, groq, nvidia, cerebras, openrouter, ollama]
     description: dense or long-context work
   HUGE:
-    order: [gemini, ollama, openrouter, nvidia, groq]
+    order: [gemini_1, ollama, openrouter, nvidia, groq]
     min_ctx: 8000
     description: >
       Above the 8k classifier boundary. v3 refused these outright; v4 keeps
@@ -39,26 +39,8 @@ tiers:
       window is the reason this tier is servable at all) and refuses with a
       context-specific error if none qualify.
 
-  # ── The cross-model capability ladder ──────────────────────────────────────
-  # TINY/LARGE/HUGE above are the CLASSIFIER's ladder: they answer "how big is
-  # this prompt", and their rings are v3's failover rings verbatim, so default
-  # routing has not moved. What they were never able to answer is "how good does
-  # this answer need to be", because a ring is a failover order and not a price
-  # ladder — every rung of it could end up served by the same model.
-  #
-  # These three rungs are the price ladder. Each one names a DIFFERENT model, on
-  # a different provider, and the rungs are ordered by the blended $/Mtok in
-  # pricing.yaml. `strict: true` is what makes a rung a rung: without it
-  # `order_for` appends every other configured provider as a last-resort tail,
-  # and a CHEAP request could be answered by the frontier model. `objective:
-  # order` pins the declared preference against the global cost/quality dial,
-  # which would otherwise re-sort a one-model rung into a different model.
-  #
-  # Every price and latency below was MEASURED against this gateway on
-  # 2026-07-30 with an identical 3-sentence prompt at max_tokens 512,
-  # temperature 0, `reasoning: "off"`. See pricing.yaml for the per-model rows.
   CHEAP:
-    order: [ollama, openrouter]
+    order: [gemini_1, ollama, openrouter]
     strict: true
     objective: order
     description: >
@@ -68,7 +50,7 @@ tiers:
       dollars, expensive in wall-clock on the local rung — which is the real
       tradeoff a cheap rung buys, and the reason latency belongs next to price.
   STANDARD:
-    order: [groq, gemini]
+    order: [gemini_1, groq]
     strict: true
     objective: order
     description: >
@@ -77,15 +59,11 @@ tiers:
       1.2 s) as the same-rung failover. Both are genuinely different models
       from either neighbouring rung.
   FRONTIER:
-    order: [github, cerebras]
+    order: [gemini_1, cerebras]
     strict: true
     objective: order
     description: >
-      GitHub Models openai/gpt-4.1 ($2.00/$8.00 per Mtok, measured 2.9 s,
-      $0.000682 for the reference prompt) with Cerebras zai-glm-4.7
-      ($0.50/$0.50, measured 1.0 s) behind it. Note the context ceiling: both
-      cap at 8k, so a prompt above that belongs on HUGE, not here — this ladder
-      prices capability, the other one sizes context.
+      Gemini gemini-3.1-flash-lite with Cerebras zai-glm-4.7 behind it.
 
 # The escalation ladder, cheapest first. Also defines tier ordering for the
 # role floors and ceilings below, so there is one source of "which tier is

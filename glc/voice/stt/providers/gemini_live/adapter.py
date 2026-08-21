@@ -156,7 +156,7 @@ class Provider(STTProvider):
         except ImportError as exc:  # pragma: no cover - dependency present
             raise STTError("the 'websockets' package is required", status=None) from exc
 
-        api_key = self.config.get("api_key") or os.environ.get("GEMINI_API_KEY")
+        api_key = self.config.get("api_key") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY_1")
         if not api_key:
             raise STTError("GEMINI_API_KEY is not set", status=None)
 

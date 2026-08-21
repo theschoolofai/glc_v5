@@ -47,3 +47,22 @@ def test_legacy_single_key_is_a_one_member_pool(monkeypatch):
     pool = _providers(monkeypatch, {"GEMINI_API_KEY": "legacy"})
     assert {name for name in pool if name.startswith("gemini_")} == {"gemini_1"}
     assert Router(pool, ["gemini"]).candidates() == ["gemini_1"]
+
+
+def test_build_embedders_resolves_gemini_key_1(monkeypatch):
+    from glc.embedders import build_embedders
+    
+    # Clear any existing key
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY_1", raising=False)
+    
+    # Check fallback drops if no key is set
+    embedders, names = build_embedders()
+    assert "gemini" not in names
+    
+    # Check fallback resolves to GEMINI_API_KEY_1
+    monkeypatch.setenv("GEMINI_API_KEY_1", "key1")
+    embedders, names = build_embedders()
+    assert "gemini" in names
+    gem_emb = next(e for e in embedders if e.name == "gemini")
+    assert gem_emb.api_key == "key1"
