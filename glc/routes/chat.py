@@ -359,10 +359,14 @@ def _backoff_for(err: Exception, has_model_override: bool = False):
     if status == 429:
         if "queue" in msg:
             return _backoff_seconds("queue"), "server queue full"
-        if "quota" in msg or "rpm" in msg or "per minute" in msg:
-            return _backoff_seconds("rpm"), "RPM quota burned"
-        if "rpd" in msg or "per day" in msg or "daily" in msg:
+        # Daily first. Every Google quota message contains the word "quota",
+        # including the daily ones, so testing the generic term before the
+        # window made the RPD branch unreachable and benched a key that is
+        # finished until midnight for sixty seconds.
+        if "rpd" in msg or "per day" in msg or "perday" in msg or "daily" in msg:
             return _backoff_seconds("rpd"), "RPD quota burned"
+        if "quota" in msg or "rpm" in msg or "per minute" in msg or "perminute" in msg:
+            return _backoff_seconds("rpm"), "RPM quota burned"
         return _backoff_seconds("rate_limited"), "rate limited"
     if status and 500 <= status < 600:
         return _backoff_seconds("upstream_5xx"), f"upstream {status}"

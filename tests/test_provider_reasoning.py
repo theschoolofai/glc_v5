@@ -178,3 +178,38 @@ def test_the_other_failure_classes_keep_their_v3_numbers():
     assert C._backoff_for(_E("RPM quota exceeded"))[0] == 60
     assert C._backoff_for(_E("queue_exceeded"))[0] == 15
     assert C._backoff_for(_E("slow down"))[0] == 30
+
+
+def test_a_daily_quota_is_benched_for_the_day_not_for_a_minute():
+    """The bug: a key exhausted until midnight was benched for 60 seconds.
+
+    Two independent reasons the RPD branch was unreachable for Gemini, whose
+    429 body is reproduced here verbatim from a live gateway:
+
+    * every Google quota message contains the word "quota", and that check runs
+      first, so the per-minute branch always won;
+    * Google writes the window as ``PerDay``, one word, and the matcher looked
+      for ``"per day"`` with a space.
+
+    A key that cannot serve another request until tomorrow therefore came back
+    as a candidate every 60 seconds, all day.
+    """
+
+    class _E(Exception):
+        status = 429
+
+    gemini_daily = _E(
+        "gemini HTTP 429: You exceeded your current quota, please check your plan and "
+        "billing details. For more information on this error, head to: "
+        "https://ai.google.dev/gemini-api/docs/rate-limits.\n"
+        "* Quota exceeded for metric: generativelanguage.googleapis.com/"
+        "generate_content_free_tier_requests, limit: 50, quota_dimensions: PerDay"
+    )
+    seconds, reason = C._backoff_for(gemini_daily)
+    assert reason == "RPD quota burned"
+    assert seconds == 3600, "a key that is done until tomorrow must not return in a minute"
+
+    # A genuine per-minute burst still gets the short bench.
+    minute, reason = C._backoff_for(_E("Quota exceeded ... limit_value: 15 PerMinute"))
+    assert reason == "RPM quota burned"
+    assert minute == 60
