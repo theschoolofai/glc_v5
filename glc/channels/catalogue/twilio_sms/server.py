@@ -36,7 +36,11 @@ from glc.security.pairing import get_pairing_store
 from .adapter import Adapter
 from .webhook import build_app, gateway_roundtrip
 
-load_dotenv(Path(__file__).resolve().parents[5] / ".env")  # matches glc/main.py's convention
+# parents[4] is the package root: twilio_sms -> catalogue -> channels -> glc.
+# The Discord bridge uses parents[5] because it sits one level deeper, in tests/;
+# copying that number here resolved a path outside the repository entirely.
+ENV_PATH = Path(__file__).resolve().parents[4] / ".env"
+load_dotenv(ENV_PATH)
 
 # ─── ANSI colors ─────────────────────────────────────────────────────────────
 DIM = "\033[38;5;250m"
