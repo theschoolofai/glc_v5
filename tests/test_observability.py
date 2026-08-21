@@ -274,10 +274,10 @@ def test_agent_trace_says_so_when_no_runtime_is_configured(monkeypatch, app_clie
     assert "GLC_S15_BASE_URL" in r.json()["detail"]
 
 
-def test_agent_trace_reports_an_unreachable_runtime(app_client):
-    r = app_client.get(
-        "/v1/observability/agent_trace/run-1",
-        params={"base_url": "http://127.0.0.1:1"},  # nothing listens on port 1
-    )
+def test_agent_trace_reports_an_unreachable_runtime(monkeypatch, app_client):
+    # The target is operator configuration; a caller-supplied base_url would
+    # make this route an SSRF with response reflection.
+    monkeypatch.setenv("GLC_S15_BASE_URL", "http://127.0.0.1:1")  # nothing listens on port 1
+    r = app_client.get("/v1/observability/agent_trace/run-1")
     assert r.status_code == 502
     assert "unreachable" in r.json()["detail"]

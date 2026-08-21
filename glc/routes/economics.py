@@ -20,9 +20,10 @@ naturally in a browser.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from glc import db
+from glc.config import get_or_create_install_token
 from glc.economics import budget as _budget
 from glc.economics import meter as _meter
 from glc.economics import pricing as _pricing
@@ -30,6 +31,17 @@ from glc.llm_schemas import BudgetSetRequest
 from glc.telemetry import otel as _otel
 
 router = APIRouter()
+
+
+def _require_token(authorization: str | None) -> None:
+    """The economics surface arms and disarms the budget ceiling and purges
+    the cache — operator actions. Same guard as /v1/control/*."""
+    expected = get_or_create_install_token()
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "missing bearer token (Authorization: Bearer <install_token>)")
+    presented = authorization.removeprefix("Bearer ").strip()
+    if presented != expected:
+        raise HTTPException(403, "install token mismatch")
 
 
 def _controller(request: Request) -> _budget.BudgetController:
@@ -80,13 +92,18 @@ async def get_budget(principal: str, request: Request):
 
 
 @router.post("/v1/budget")
-async def set_budget(req: BudgetSetRequest, request: Request):
+async def set_budget(
+    req: BudgetSetRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
     """Arm, move, or (with limit_usd 0) immediately close a ceiling.
 
     The write goes to a runtime table that shadows budgets.yaml, so an operator
     can clamp a runaway session in one call without editing a file or
     redeploying — which is the whole point of a kill-switch.
     """
+    _require_token(authorization)
     ctl = _controller(request)
     try:
         pol = ctl.set_limit(
@@ -106,8 +123,13 @@ async def set_budget(req: BudgetSetRequest, request: Request):
 
 
 @router.delete("/v1/budget/{principal:path}")
-async def delete_budget(principal: str, request: Request):
+async def delete_budget(
+    principal: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
     """Remove a runtime override. Any budgets.yaml entry underneath re-applies."""
+    _require_token(authorization)
     ctl = _controller(request)
     try:
         removed = ctl.clear_limit(principal)
@@ -198,7 +220,12 @@ async def cache_stats(request: Request):
 
 
 @router.post("/v1/cache/purge")
-async def cache_purge(request: Request, expired_only: bool = True):
+async def cache_purge(
+    request: Request,
+    expired_only: bool = True,
+    authorization: str | None = Header(default=None),
+):
+    _require_token(authorization)
     sc = getattr(request.app.state, "semantic_cache", None)
     if sc is None:
         raise HTTPException(503, "semantic cache not initialised")

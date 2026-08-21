@@ -191,14 +191,16 @@ async def trace_detail(trace_id: str, request: Request):
 
 
 @router.get("/v1/observability/agent_trace/{run_id}")
-async def agent_trace(run_id: str, request: Request, base_url: str | None = None):
+async def agent_trace(run_id: str, request: Request):
     """Proxy one S15Code run's OTel span tree, so the page can draw a waterfall."""
-    target = (base_url or os.getenv("GLC_S15_BASE_URL") or "").rstrip("/")
+    # The target comes from operator configuration only. A caller-supplied
+    # base_url would make this an unauthenticated SSRF with response
+    # reflection: the gateway would fetch any URL and return its body.
+    target = (os.getenv("GLC_S15_BASE_URL") or "").rstrip("/")
     if not target:
         raise HTTPException(
             503,
-            "no agent runtime configured: set GLC_S15_BASE_URL "
-            "(or pass ?base_url=) to enable agent-run traces",
+            "no agent runtime configured: set GLC_S15_BASE_URL to enable agent-run traces",
         )
     import httpx
 
