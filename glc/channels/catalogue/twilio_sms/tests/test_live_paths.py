@@ -171,3 +171,20 @@ async def test_send_no_from_raises_in_live_mode():
     reply = ChannelReply(channel="twilio_sms", channel_user_id=OWNER_ID, text="x")
     with pytest.raises(RuntimeError):
         await adapter.send(reply)
+
+
+def test_the_receiver_loads_the_env_file_from_the_repository_root():
+    """The receiver counted one directory too many and read a .env above the repo.
+
+    `server.py` sits four levels under the package root but resolved
+    `parents[5]`, copied from the Discord bridge, which sits one level deeper
+    in `tests/`. That path is outside the repository, so credentials in the
+    checkout's own .env were never loaded -- and nothing errored: the startup
+    banner simply reported every value as unset, which reads like a missing
+    setting rather than a file being read from the wrong place.
+    """
+    from glc.channels.catalogue.twilio_sms import server
+
+    assert (server.ENV_PATH.parent / "glc").is_dir(), (
+        f"{server.ENV_PATH} is not inside the package root; the .env there is never read"
+    )
