@@ -59,6 +59,22 @@ _KIND_MAP: dict[str, Literal["image", "audio", "video", "file", "location"]] = {
 }
 
 
+def _conversation_id(parsed: Any) -> str | None:
+    """The conversation this mail belongs to, not this one message.
+
+    `Message-ID` is unique per message, so using it as `thread_id` gave every
+    reply a thread of its own and nothing downstream could tell that two mails
+    belong together. RFC 5322 already carries the answer: the first entry of
+    `References` is the root of the chain, `In-Reply-To` is the parent when no
+    chain was kept, and a mail that starts a thread is its own root.
+    """
+    references = (getattr(parsed, "references", None) or "").split()
+    if references:
+        return references[0].strip() or None
+    in_reply_to = (getattr(parsed, "in_reply_to", None) or "").strip()
+    return in_reply_to or parsed.message_id
+
+
 class Adapter(ChannelAdapter):
     name = "imap"
 
@@ -201,7 +217,7 @@ class Adapter(ChannelAdapter):
             trust_level=trust_level,
             arrived_at=datetime.now().astimezone(),
             attachments=attachments,
-            thread_id=parsed.message_id,
+            thread_id=_conversation_id(parsed),
         )
 
     async def send(self, reply: ChannelReply) -> Any:

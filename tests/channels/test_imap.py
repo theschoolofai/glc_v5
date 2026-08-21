@@ -129,3 +129,37 @@ async def test_channel_specific_behaviour_pdf_attachment_to_artifact(mock, pair_
     )
     sha = pdf.ref.removeprefix("art:")
     assert sha in mock.artifact_store, "PDF bytes must land in the artifact store"
+
+
+def _raw(message_id: str, body: str, *, in_reply_to: str = "", references: str = "") -> bytes:
+    headers = [f"From: {OWNER_ID}", "To: bot@example.com", "Subject: ping",
+               f"Message-ID: {message_id}"]
+    if in_reply_to:
+        headers.append(f"In-Reply-To: {in_reply_to}")
+    if references:
+        headers.append(f"References: {references}")
+    return ("\r\n".join(headers) + "\r\n\r\n" + body).encode()
+
+
+@pytest.mark.asyncio
+async def test_two_mails_in_one_conversation_share_a_thread_id(mock, pair_owner):
+    """`thread_id` identified the message, not the conversation it belongs to.
+
+    The adapter used `Message-ID`, which is unique per message, so every reply
+    arrived as a brand new thread and nothing downstream could tell that two
+    mails belong together. A reply answering a question the agent parked on
+    therefore matched no waiting conversation and was read as a fresh request.
+
+    RFC 5322 already carries the conversation: the first entry of `References`
+    is its root, `In-Reply-To` is the parent when no chain was kept, and a mail
+    that starts a thread is its own root.
+    """
+    adapter = Adapter(config={"mock": mock})
+
+    opening = await adapter.on_message({"uid": 1, "raw": _raw("<root@example.com>", "may I?")})
+    reply = await adapter.on_message({"uid": 2, "raw": _raw(
+        "<later@example.com>", "yes, go ahead",
+        in_reply_to="<root@example.com>", references="<root@example.com>")})
+
+    assert opening.thread_id == "<root@example.com>", "a mail that starts a thread is its own root"
+    assert reply.thread_id == opening.thread_id, "a reply belongs to the conversation it answers"
