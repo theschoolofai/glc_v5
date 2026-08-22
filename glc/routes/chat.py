@@ -702,13 +702,24 @@ async def chat(req: ChatRequest, request: Request):
             f"unknown provider '{req.provider}'. Try one of: {list(rtr.providers)} or shortcuts {list(SHORTCUTS)}",
         )
 
+    # `explicit_override` answers "did the caller name a provider?". Failover
+    # needs the narrower question: did they name one metered *instance*?
+    # `gemini` is a POOL name that `Router.expand` turns into gemini_1..N, one
+    # entry per independently-metered key, so moving off a burned key onto a
+    # sibling honours the request rather than substituting a provider. Treating
+    # the pool as a hard pin is what made a single 429 on gemini_1 fail the
+    # whole call with nine other keys idle. `gemini_1` names one instance and
+    # stays strict; so does a one-key pool, which has nothing to move to.
+    # Computed here because the ring below prunes `candidates` as it goes.
+    pinned_instance = explicit_override and len(candidates) == 1
+
     all_attempts: list[dict] = list(policy_rejections)
     last_err = None
     escalations = 0
     budget_info: dict | None = None
     last_refusal = None
 
-    if explicit_override and len(candidates) == 1:
+    if pinned_instance:
         deadline = time.time() + 30
         while time.time() < deadline:
             name, _ = rtr.pick(est, candidates, required_caps=required_caps)
@@ -1046,7 +1057,12 @@ async def chat(req: ChatRequest, request: Request):
                 if secs > 0:
                     tag += f" → backoff {secs:.0f}s ({reason})"
                 all_attempts.append({"provider": name, "reason": tag})
-                if explicit_override or not getattr(e, "retryable", True):
+                # `pinned_instance`, not `explicit_override`: a retryable error
+                # on one pool key must advance to the next key. A non-retryable
+                # one (a 400 bad request, a 401) is doomed on every key alike,
+                # so it still stops here instead of burning the whole pool on
+                # the same rejected call.
+                if pinned_instance or not getattr(e, "retryable", True):
                     raise HTTPException(502, f"{name} failed: {e}")
                 candidates = [c for c in candidates if c != name]
                 continue
@@ -1076,7 +1092,7 @@ async def chat(req: ChatRequest, request: Request):
                     tier=tier,
                 )
                 all_attempts.append({"provider": name, "reason": f"exception: {str(e)[:120]}"})
-                if explicit_override:
+                if pinned_instance:
                     raise HTTPException(502, f"{name} failed: {e}")
                 candidates = [c for c in candidates if c != name]
                 continue
