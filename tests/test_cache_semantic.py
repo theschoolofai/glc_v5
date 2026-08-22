@@ -151,6 +151,51 @@ async def test_a_different_system_prompt_is_a_different_namespace():
     assert (await c.lookup("q", {"model": "m", "system": "be verbose"})).hit is False
 
 
+async def test_a_different_provider_pin_is_a_different_namespace():
+    """A request pinned to an explicit provider must not be answered from a
+    cache entry stored under a different (or no) pin."""
+    v = [1.0, 0.0]
+    c = _cache()
+    c.embed_fn = _fixed_embedder({"q": v})
+    await c.store("q", {"model": "m", "provider": None}, {"text": "A"}, provider="p", model="m")
+    assert (await c.lookup("q", {"model": "m", "provider": None})).hit is True
+    assert (await c.lookup("q", {"model": "m", "provider": "gemini_1"})).hit is False
+
+
+async def test_a_different_max_tokens_budget_is_a_different_namespace():
+    """A 64-token bulk answer must never be served to a request budgeted for
+    4096 tokens: the caller asked for a different output shape entirely."""
+    v = [1.0, 0.0]
+    c = _cache()
+    c.embed_fn = _fixed_embedder({"q": v})
+    await c.store("q", {"model": "m", "max_tokens": 64}, {"text": "A"}, provider="p", model="m")
+    assert (await c.lookup("q", {"model": "m", "max_tokens": 64})).hit is True
+    assert (await c.lookup("q", {"model": "m", "max_tokens": 4096})).hit is False
+
+
+async def test_a_different_auto_route_tier_is_a_different_namespace():
+    """The whole thesis of routing/policy.py is a role floor per tier. A
+    ``bulk`` (cheap-tier) answer must not satisfy an ``adjudicator``
+    (frontier-tier) request just because the namespace didn't distinguish
+    them -- that bypasses the tier floor entirely."""
+    v = [1.0, 0.0]
+    c = _cache()
+    c.embed_fn = _fixed_embedder({"q": v})
+    await c.store("q", {"model": "m", "auto_route": "bulk"}, {"text": "A"}, provider="p", model="m")
+    assert (await c.lookup("q", {"model": "m", "auto_route": "bulk"})).hit is True
+    assert (await c.lookup("q", {"model": "m", "auto_route": "adjudicator"})).hit is False
+
+
+def test_shipped_namespace_fields_cover_provider_max_tokens_and_auto_route():
+    """cache.yaml is what production actually loads. If it lists fewer fields
+    than the code needs, the isolation above is only true in tests."""
+    cfg = SemanticCacheConfig.load()
+    for field_name in ("provider", "max_tokens", "auto_route"):
+        assert field_name in cfg.namespace_fields, (
+            f"{field_name!r} missing from cache.yaml's namespace_fields"
+        )
+
+
 async def test_scope_dimensions_stop_cross_tenant_leakage():
     from glc.economics.meter import Principal
 

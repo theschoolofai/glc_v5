@@ -90,7 +90,10 @@ class SemanticCacheConfig:
     ttl_seconds: int = 3600
     max_entries: int = 5000
     namespace_fields: list[str] = field(
-        default_factory=lambda: ["model", "system", "tools", "response_format", "temperature"]
+        default_factory=lambda: [
+            "model", "system", "tools", "response_format", "temperature",
+            "provider", "max_tokens", "auto_route",
+        ]
     )
     max_temperature: float = 0.3
     skip_when_tools: bool = True
