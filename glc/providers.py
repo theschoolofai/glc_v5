@@ -1278,6 +1278,12 @@ def build_providers(cache_store):
         out["github"] = GitHubProvider(k, os.getenv("GITHUB_MODEL", "openai/gpt-4.1-mini"))
     if om := os.getenv("OLLAMA_MODEL"):
         out["ollama"] = OllamaProvider(om, os.getenv("OLLAMA_URL", "http://localhost:11434"))
+    # ---------- OpenAI (native) ----------
+    if k := os.getenv("OPENAI_API_KEY"):
+        out["openai"] = OpenAICompatProvider(
+            k, os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            "https://api.openai.com/v1",
+        )
     # V9: bake per-model capability overrides (vision/reasoning) into each
     # instance, so Router.pick() — which reads provider.capabilities directly —
     # sees the resolved truth instead of the class-level default.
