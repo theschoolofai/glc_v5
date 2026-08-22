@@ -35,7 +35,7 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request, Response
 
@@ -66,6 +66,25 @@ def validate_signature(auth_token: str, url: str, params: dict[str, Any], signat
 def _skip_signature() -> bool:
     """Local-dev escape hatch to bypass verification."""
     return os.environ.get("GLC_TWILIO_SKIP_SIG", "").lower() in {"1", "true", "yes"}
+
+
+def _external_url(request: Request) -> str:
+    """The URL Twilio actually HMACed, for signature verification.
+
+    `request.url` is the internal ASGI URL this process is bound to
+    (e.g. `http://localhost:8200/...`). The documented deployment
+    (`server.py`) sits behind an ngrok tunnel, so Twilio signed the public
+    `GLC_PUBLIC_BASE` https URL instead -- a different scheme and host.
+    Reusing the same env var `server.py` already uses to build the webhook
+    URL it prints keeps this consistent with how the deployment is actually
+    configured, rather than introducing a second setting for the same fact.
+    """
+    base = os.environ.get("GLC_PUBLIC_BASE", "").rstrip("/")
+    if not base:
+        return str(request.url)
+    public = urlsplit(base)
+    internal = urlsplit(str(request.url))
+    return urlunsplit((public.scheme, public.netloc, internal.path, internal.query, ""))
 
 
 async def gateway_roundtrip(
@@ -126,7 +145,7 @@ def build_app(
         form = dict(parse_qsl(body, keep_blank_values=True))
         auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
         signature = request.headers.get("X-Twilio-Signature")
-        url = str(request.url)
+        url = _external_url(request)
 
         if not _skip_signature() and not validate_signature(auth_token, url, form, signature):
             return Response(status_code=403, content="invalid signature")
