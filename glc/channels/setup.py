@@ -11,11 +11,14 @@ always wins.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from glc import config
+
+log = logging.getLogger("glc.channels.setup")
 
 CHANNEL_SPECS: dict[str, dict[str, Any]] = {
     # Guide-only cards intentionally have no saveable fields: these adapters
@@ -58,12 +61,18 @@ def _save(data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(data, indent=2, sort_keys=True))
-    os.chmod(temp, 0o600)
+    # Restrict BEFORE the rename, so the secrets are never briefly readable
+    # under the final name, and again afterwards because a Windows ACL does not
+    # necessarily survive the replace.
+    config.restrict_to_owner(temp)
     temp.replace(path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:  # pragma: no cover - Windows
-        pass
+    if not config.restrict_to_owner(path):
+        # The old code called os.chmod inside `except OSError: pass`, which on
+        # Windows never fires — chmod succeeds there and changes nothing that
+        # matters, so this file was written unprotected on every Windows
+        # install while the module docstring promised owner-only permissions.
+        # Failing loudly is the least this can do.
+        log.warning("channel secrets at %s could not be restricted to this account", path)
 
 
 def configured(name: str) -> dict[str, Any]:
