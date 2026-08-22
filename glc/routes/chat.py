@@ -77,8 +77,8 @@ if _AGENT_ROUTING_PATH.exists():
 # authoritative and `_tier_order()` prefers it. The two agree by construction:
 # routing.yaml's TINY and LARGE rings are these lists verbatim.
 TIER_TO_ORDER = {
-    "TINY": ["github", "openrouter", "groq", "nvidia", "cerebras", "gemini", "ollama"],
-    "LARGE": ["gemini", "groq", "nvidia", "cerebras", "github", "openrouter", "ollama"],
+    "TINY": ["gemini", "openrouter", "groq", "nvidia", "cerebras", "ollama"],
+    "LARGE": ["gemini", "groq", "nvidia", "cerebras", "openrouter", "ollama"],
 }
 
 

@@ -51,7 +51,7 @@ class Provider(TTSProvider):
         return await self._synthesize_live(text, setup_frame)
 
     async def _synthesize_live(self, text: str, setup_frame: dict) -> SynthesizeResult:
-        api_key = os.environ.get("GEMINI_API_KEY")
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY_1")
         if not api_key:
             raise TTSError("GEMINI_API_KEY is not set", status=401)
 
