@@ -50,6 +50,8 @@ SHORTCUTS = {
     "gh": "github",
     "ghb": "github",
     "github": "github",
+    "oai": "openai",
+    "openai": "openai",
 }
 
 
