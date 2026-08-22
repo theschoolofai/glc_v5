@@ -36,8 +36,11 @@ semantic:
   #: Similarity is only consulted among entries whose namespace matches
   #: exactly. These are the request fields that must be byte-identical before
   #: two prompts are even comparable — a cached answer from a different model,
-  #: system prompt or tool set is not the same answer.
-  namespace_fields: [model, system, tools, response_format, temperature]
+  #: system prompt or tool set is not the same answer. provider/max_tokens/
+  #: auto_route are load-bearing too: without them a cheap bulk-tier answer
+  #: can satisfy an expensive frontier-tier request, bypassing the role floor
+  #: that routing/policy.py exists to enforce.
+  namespace_fields: [model, system, tools, response_format, temperature, provider, max_tokens, auto_route]
 
   #: Never serve a cached answer to a request that is not deterministic-ish.
   #: A high temperature means the caller asked for variety.
