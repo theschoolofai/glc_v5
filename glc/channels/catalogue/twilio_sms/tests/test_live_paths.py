@@ -50,6 +50,53 @@ async def test_inbound_mms_persists_bytes_live(monkeypatch):
     assert artifacts.get_bytes(ref) == payload  # persisted, not discarded
 
 
+@pytest.mark.parametrize(
+    "media_url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:8111/v1/control/kill",
+    ],
+)
+async def test_inbound_mms_refuses_internal_media_url(monkeypatch, media_url):
+    """MediaUrl is caller-supplied. The chat plane already SSRF-guards
+    image inlining; this adapter did not. A metadata or loopback URL
+    must never be fetched."""
+    fetched: list[str] = []
+
+    class _SpyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kwargs):
+            fetched.append(url)
+            return httpx.Response(200, content=b"secret-from-metadata")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _SpyClient)
+
+    adapter = Adapter(config={"phone_number": BOT_PHONE})
+    raw = {
+        "From": OWNER_ID,
+        "To": BOT_PHONE,
+        "Body": "photo",
+        "MessageSid": "MM-ssrf",
+        "NumMedia": "1",
+        "MediaUrl0": media_url,
+        "MediaContentType0": "image/jpeg",
+    }
+    msg = await adapter.on_message(raw)
+
+    assert fetched == []
+    assert msg.attachments == []
+    assert msg.metadata["failed_media"][0]["url"] == media_url
+    assert "refusing MediaUrl" in msg.metadata["failed_media"][0]["error"]
+
+
 async def test_inbound_mms_download_failure_is_non_fatal(monkeypatch):
     """A download failure (network error, 403, ...) for one media item must
     not crash on_message — it should be skipped and recorded, not raised."""

@@ -295,10 +295,40 @@ class Adapter(ChannelAdapter):
         return None
 
     async def _download_media(self, url: str) -> bytes:
-        """Download Twilio-hosted MMS media using Basic Auth."""
+        """Download MMS media after SSRF-checking every hop.
+
+        ``MediaUrl`` is taken from the inbound webhook form. Chat-plane
+        image inlining already goes through ``ssrf.fetch_bytes``; this
+        adapter used a bare ``httpx.get`` with default redirect following,
+        so a forged or 302'd URL became a gateway fetch of loopback,
+        RFC1918, or cloud metadata. Basic Auth is still applied for real
+        Twilio-hosted media.
+        """
+        from fastapi import HTTPException
+
+        from glc.security import ssrf
+
         account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
         auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, auth=(account_sid, auth_token))
+        current = url
+        for _ in range(ssrf.MAX_REDIRECTS + 1):
+            try:
+                ssrf.prepare_safe_target(current)
+            except HTTPException as e:
+                raise ValueError(f"refusing MediaUrl: {e.detail}") from e
+            async with httpx.AsyncClient(
+                timeout=ssrf.FETCH_TIMEOUT,
+                follow_redirects=False,
+            ) as client:
+                resp = await client.get(current, auth=(account_sid, auth_token))
+            if resp.is_redirect:
+                location = resp.headers.get("location")
+                if not location:
+                    raise ValueError("MediaUrl redirect without Location")
+                current = str(httpx.URL(current).join(location))
+                continue
             resp.raise_for_status()
+            if len(resp.content) > ssrf.MAX_IMAGE_BYTES:
+                raise ValueError("MediaUrl exceeds size cap")
             return resp.content
+        raise ValueError("MediaUrl too many redirects")
