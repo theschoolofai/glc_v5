@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 
+from glc import config
+
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
@@ -34,9 +36,17 @@ def test_secret_save_never_round_trips_and_requires_restart(app_client, install_
     )
     assert result.status_code == 200
     assert result.json()["restart_required"] is True
-    raw = (tmp_path / "cfg" / "channel_secrets.json").read_text()
+    secrets_file = tmp_path / "cfg" / "channel_secrets.json"
+    raw = secrets_file.read_text()
     assert "not-for-the-browser" in raw
-    assert (tmp_path / "cfg" / "channel_secrets.json").stat().st_mode & 0o077 == 0
+    # The invariant is "only this account can read it". The SIGNAL for that is
+    # platform-specific, and asserting the POSIX one everywhere is why this
+    # test failed on Windows for reasons that had nothing to do with the
+    # channel code: stat().st_mode there is synthesised from the read-only
+    # attribute and reports 0o666 even for a file whose ACL grants exactly one
+    # account, so the old assertion could never pass — while os.chmod(0o600),
+    # which the code relied on, silently did nothing at all.
+    assert config.owner_only(secrets_file), f"{secrets_file} is readable beyond its owner"
 
     catalogue = app_client.get("/v1/channel-admin/catalogue", headers=_auth(install_token))
     assert "not-for-the-browser" not in catalogue.text

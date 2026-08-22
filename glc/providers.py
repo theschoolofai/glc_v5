@@ -841,8 +841,22 @@ class GeminiProvider(BaseProvider):
                 body["generationConfig"]["responseMimeType"] = "application/json"
 
         reasoning_applied = False
-        if reasoning and reasoning != "off":
-            knob = _gemini_thinking_knob(m)
+        knob = _gemini_thinking_knob(m)
+        if reasoning == "off" and knob:
+            # "off" has to be SENT, not merely left unsaid. Every gemini-3.x
+            # model thinks by default, and thinking tokens are drawn from the
+            # same max_tokens budget as the reply — so omitting thinkingConfig
+            # does not mean "no thinking", it means "think as much as you like
+            # out of the caller's budget". Measured on 3.7-flash: max_tokens=16
+            # returned output_tokens=0, stop_reason=max_tokens and an EMPTY
+            # string, which a caller reads as "the model said nothing". On a
+            # real run it truncates the answer before its citations, or starves
+            # the planner of a patch and leaves the graph with no terminal node.
+            # thinkingBudget=0 for both knob kinds. "off" is not a member of the
+            # ThinkingLevel enum — the API rejects it with a 400 — so the budget
+            # field is the only way to actually say no.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
+        elif reasoning and reasoning != "off":
             if knob == "level":
                 body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": reasoning}
                 reasoning_applied = True
@@ -929,10 +943,15 @@ def _gemini_thinking_knob(model: str) -> str | None:
         return None
     if "flash-lite" in m:
         return None
-    if "2.5-pro" in m or "3-pro" in m or "3.1-pro" in m:
+    if "2.5-pro" in m:
         return "level"
-    if "3-flash" in m or "3.1-flash" in m:
-        return "level"  # 3.x flash (non-lite) supports thinkingLevel
+    # Any gemini-3.x pro or flash, matched rather than enumerated. The old list
+    # named 3 and 3.1 only, so 3.5 and 3.7 — which shipped afterwards — fell
+    # through to None and reported "no thinking support". That is the shape of
+    # failure that punishes you for upgrading: raising the default model would
+    # have silently turned reasoning off across the whole pool.
+    if re.match(r"gemini-3(\.\d+)?-(flash|pro)", m):
+        return "level"
     if "2.5-flash" in m:
         return "budget"
     return None
@@ -1260,7 +1279,17 @@ def build_providers(cache_store):
     ]
     if not gemini_pool and (key := os.getenv("GEMINI_API_KEY")):
         gemini_pool = [key]
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    # NOT gemini-2.5-flash. ListModels still returns it, so nothing in the config
+    # reads as wrong, but generateContent answers 404:
+    #     "no longer available to new users"
+    # and a 404 is marked retryable here, so the router burns the whole key pool
+    # on a model that is dead for every key alike. Verified against the live API:
+    # gemini-3.5-flash answers in ~1.6s. NOT 3.7-flash: measured at 69-183s
+# for a one-word reply, and it burns a small max_tokens entirely on
+# internal thinking, returning 200 with EMPTY text -- which a caller
+# reads as 'the model said nothing' rather than as a timeout. The
+    # `gemini-*-flash*` glob in pricing.yaml prices either.
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     for i, key in enumerate(gemini_pool, start=1):
         out[f"gemini_{i}"] = GeminiProvider(key, gemini_model, cache_store)
         _LIMITS[f"gemini_{i}"] = dict(_LIMITS["gemini"])
