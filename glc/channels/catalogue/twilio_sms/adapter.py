@@ -61,6 +61,16 @@ def _detect_keyword(body: str) -> str | None:
     return None
 
 
+# Numbers that sent STOP. Surfacing the keyword is not compliance; send()
+# must not keep texting them. START clears the flag.
+_opted_out: set[str] = set()
+
+
+def reset_opt_outs() -> None:
+    """Test helper: inbound STOP state is process-wide."""
+    _opted_out.clear()
+
+
 class Adapter(ChannelAdapter):
     name = "twilio_sms"
 
@@ -167,6 +177,10 @@ class Adapter(ChannelAdapter):
         if keyword is not None:
             # Surface opt-out/help keywords so the gateway/agent can comply.
             metadata["sms_keyword"] = keyword
+            if keyword == "STOP":
+                _opted_out.add(from_phone)
+            elif keyword == "START":
+                _opted_out.discard(from_phone)
 
         return ChannelMessage(
             channel=self.name,
@@ -206,6 +220,8 @@ class Adapter(ChannelAdapter):
                 )
 
         to_phone = reply.channel_user_id
+        if to_phone in _opted_out:
+            return {"error": "recipient opted out", "code": "sms_opted_out"}
         body = reply.text or ""
 
         payload: dict[str, Any] = {

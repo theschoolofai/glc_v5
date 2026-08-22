@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from glc.channels.catalogue.twilio_sms.adapter import Adapter, _media_kind
+from glc.channels.catalogue.twilio_sms.adapter import Adapter, _media_kind, reset_opt_outs
 from glc.channels.catalogue.twilio_sms.schemas import TwilioInboundForm
 from glc.channels.envelope import Attachment, ChannelReply
 from tests.channels.mocks.twilio_sms_mock import BOT_PHONE, OWNER_ID, TwilioSmsMock
@@ -52,6 +52,36 @@ async def test_normal_message_has_no_keyword():
     raw = {"From": OWNER_ID, "To": BOT_PHONE, "Body": "stop by later", "NumMedia": "0"}
     msg = await adapter.on_message(raw)
     assert "sms_keyword" not in msg.metadata
+
+
+async def test_send_refuses_after_stop(mock):
+    """STOP is a carrier opt-out. Tagging metadata is not enough: send()
+    still posted the SMS on main."""
+    reset_opt_outs()
+    adapter = Adapter(config={"mock": mock})
+    await adapter.on_message(
+        {"From": OWNER_ID, "To": BOT_PHONE, "Body": "STOP", "NumMedia": "0"}
+    )
+    result = await adapter.send(
+        ChannelReply(channel="twilio_sms", channel_user_id=OWNER_ID, text="still going")
+    )
+    assert result["code"] == "sms_opted_out"
+    assert mock.send_log == []
+
+
+async def test_start_clears_opt_out_so_send_works_again(mock):
+    reset_opt_outs()
+    adapter = Adapter(config={"mock": mock})
+    await adapter.on_message(
+        {"From": OWNER_ID, "To": BOT_PHONE, "Body": "STOP", "NumMedia": "0"}
+    )
+    await adapter.on_message(
+        {"From": OWNER_ID, "To": BOT_PHONE, "Body": "START", "NumMedia": "0"}
+    )
+    await adapter.send(
+        ChannelReply(channel="twilio_sms", channel_user_id=OWNER_ID, text="welcome back")
+    )
+    assert mock.send_log[-1]["Body"] == "welcome back"
 
 
 async def test_outbound_art_ref_resolves_via_public_base(mock):
